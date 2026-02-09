@@ -3,6 +3,7 @@
 This repository implements a monocular visual odometry pipeline for a drone and integrates with a Pixhawk via MAVLink. The core flow reads camera frames, tracks features, estimates pixel motion, converts that to metric motion using altitude (LiDAR or fallback), and fuses it with GPS when available. It can also stream odometry and synthetic GPS back to the flight controller.
 ```bash
 NAVISAR_DASHBOARD_OPEN=0 PYTHONPATH=src python -m navisar.main
+http://127.0.0.1:8765
 ```
 
 ## What is implemented
