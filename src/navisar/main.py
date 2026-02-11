@@ -12,6 +12,7 @@ import webbrowser
 from pathlib import Path
 
 import numpy as np
+import cv2
 from pymavlink import mavutil
 import yaml
 
@@ -265,7 +266,41 @@ class ModeState:
             return self._mode
 
 
-def _make_dashboard_handler(state, mode_state, root_dir, allowed_modes):
+class FrameState:
+    """Thread-safe storage for latest JPEG frame."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._jpg = None
+        self._timestamp = None
+
+    def update(self, jpg_bytes):
+        with self._lock:
+            self._jpg = jpg_bytes
+            self._timestamp = time.time()
+
+    def snapshot(self):
+        with self._lock:
+            return self._jpg, self._timestamp
+
+
+def _normalize_gps_format(value):
+    fmt = str(value or "").strip().lower().replace("+", "_")
+    if fmt == "nmea_ubx":
+        return "ubx_nmea"
+    if fmt in {"ubx", "nmea", "ubx_nmea"}:
+        return fmt
+    return "nmea"
+
+
+def _make_dashboard_handler(
+    state,
+    mode_state,
+    gps_format_state,
+    frame_state,
+    root_dir,
+    allowed_modes,
+    allowed_gps_formats,
+):
     class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(root_dir), **kwargs)
@@ -296,10 +331,42 @@ def _make_dashboard_handler(state, mode_state, root_dir, allowed_modes):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            if self.path.startswith("/gps-format"):
+                payload = {
+                    "format": gps_format_state.get(),
+                    "allowed": list(allowed_gps_formats),
+                }
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if self.path.startswith("/video"):
+                self.send_response(200)
+                self.send_header("Age", "0")
+                self.send_header("Cache-Control", "no-cache, private")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.end_headers()
+                try:
+                    while True:
+                        jpg, _ts = frame_state.snapshot()
+                        if jpg:
+                            self.wfile.write(b"--frame\r\n")
+                            self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                            self.wfile.write(f"Content-Length: {len(jpg)}\r\n\r\n".encode("utf-8"))
+                            self.wfile.write(jpg)
+                            self.wfile.write(b"\r\n")
+                        time.sleep(0.1)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
             return super().do_GET()
 
         def do_POST(self):
-            if not self.path.startswith("/mode"):
+            if not self.path.startswith("/mode") and not self.path.startswith("/gps-format"):
                 return super().do_POST()
             length = int(self.headers.get("Content-Length", "0") or 0)
             raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -307,16 +374,32 @@ def _make_dashboard_handler(state, mode_state, root_dir, allowed_modes):
                 payload = json.loads(raw.decode("utf-8"))
             except json.JSONDecodeError:
                 payload = {}
-            requested = str(payload.get("mode", "")).strip().lower()
-            if requested in allowed_modes:
-                mode_state.set(requested)
-                data = json.dumps({"ok": True, "mode": requested}).encode("utf-8")
-                self.send_response(200)
+            if self.path.startswith("/mode"):
+                requested = str(payload.get("mode", "")).strip().lower()
+                if requested in allowed_modes:
+                    mode_state.set(requested)
+                    data = json.dumps({"ok": True, "mode": requested}).encode("utf-8")
+                    self.send_response(200)
+                else:
+                    data = json.dumps(
+                        {"ok": False, "mode": mode_state.get(), "allowed": sorted(allowed_modes)}
+                    ).encode("utf-8")
+                    self.send_response(400)
             else:
-                data = json.dumps(
-                    {"ok": False, "mode": mode_state.get(), "allowed": sorted(allowed_modes)}
-                ).encode("utf-8")
-                self.send_response(400)
+                requested = _normalize_gps_format(payload.get("format"))
+                if requested in allowed_gps_formats:
+                    gps_format_state.set(requested)
+                    data = json.dumps({"ok": True, "format": requested}).encode("utf-8")
+                    self.send_response(200)
+                else:
+                    data = json.dumps(
+                        {
+                            "ok": False,
+                            "format": gps_format_state.get(),
+                            "allowed": list(allowed_gps_formats),
+                        }
+                    ).encode("utf-8")
+                    self.send_response(400)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
@@ -329,8 +412,27 @@ def _make_dashboard_handler(state, mode_state, root_dir, allowed_modes):
     return DashboardHandler
 
 
-def start_dashboard_server(state, mode_state, root_dir, host, port, allowed_modes, open_browser=True):
-    handler = _make_dashboard_handler(state, mode_state, root_dir, allowed_modes)
+def start_dashboard_server(
+    state,
+    mode_state,
+    gps_format_state,
+    frame_state,
+    root_dir,
+    host,
+    port,
+    allowed_modes,
+    allowed_gps_formats,
+    open_browser=True,
+):
+    handler = _make_dashboard_handler(
+        state,
+        mode_state,
+        gps_format_state,
+        frame_state,
+        root_dir,
+        allowed_modes,
+        allowed_gps_formats,
+    )
     server = http.server.ThreadingHTTPServer((host, port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -689,6 +791,7 @@ def main():
         print("VIO mode ignored for optical-flow outputs; using VO mode settings.")
         vio_mode = "vo"
     mode_state = ModeState(output_mode)
+    frame_state = FrameState()
     gps_input_cfg = pixhawk_cfg.get("gps_input", {})
     gps_input_enabled = bool(gps_input_cfg.get("enabled", True))
     gps_input_port = gps_input_cfg.get("port")
@@ -862,28 +965,6 @@ def main():
         gps_timeout_s=pixhawk_cfg.get("gps_timeout_s", GPS_TIMEOUT_S),
         min_fix_type=pixhawk_cfg.get("gps_min_fix_type", GPS_MIN_FIX_TYPE),
     )
-    if DASHBOARD_ENABLED:
-        dashboard_state = DashboardState()
-        dashboard_root = _repo_root() / "simulation"
-        try:
-            dashboard_server = start_dashboard_server(
-                dashboard_state,
-                mode_state,
-                dashboard_root,
-                DASHBOARD_HOST,
-                DASHBOARD_PORT,
-                allowed_modes,
-                open_browser=_can_auto_open_browser(),
-            )
-            dashboard_state.update(
-                {
-                    "status": "running",
-                    "url": f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}/",
-                }
-            )
-        except Exception as exc:
-            _ = exc
-            dashboard_state = None
     gnss_cfg = pixhawk_cfg.get("gnss_monitor", {})
     spoof_cfg = gnss_cfg.get("spoof_detector", {})
     spoof_detector = None
@@ -912,7 +993,7 @@ def main():
         )
     gps_output_cfg = pixhawk_cfg.get("gps_output", {})
     gps_output_enabled = bool(gps_output_cfg.get("enabled", False))
-    gps_output_format = str(gps_output_cfg.get("format", "nmea")).lower()
+    gps_output_format = _normalize_gps_format(gps_output_cfg.get("format", "nmea"))
     gps_output_port = gps_output_cfg.get("port", GPS_OUTPUT_PORT)
     gps_output_baud = int(gps_output_cfg.get("baud", GPS_OUTPUT_BAUD))
     gps_output_rate_hz = float(gps_output_cfg.get("rate_hz", GPS_OUTPUT_RATE_HZ))
@@ -973,6 +1054,51 @@ def main():
             update_s=gps_output_update_s,
             raw_print=gps_output_raw_print,
         )
+    gps_format_order = ("ubx", "nmea", "ubx_nmea")
+    if nmea_emitter is not None and ubx_emitter is not None:
+        allowed_gps_formats = list(gps_format_order)
+    elif ubx_emitter is not None:
+        allowed_gps_formats = ["ubx"]
+    elif nmea_emitter is not None:
+        allowed_gps_formats = ["nmea"]
+    else:
+        allowed_gps_formats = []
+    initial_gps_format = gps_output_format
+    if initial_gps_format not in allowed_gps_formats:
+        if "ubx_nmea" in allowed_gps_formats:
+            initial_gps_format = "ubx_nmea"
+        elif "ubx" in allowed_gps_formats:
+            initial_gps_format = "ubx"
+        elif "nmea" in allowed_gps_formats:
+            initial_gps_format = "nmea"
+        else:
+            initial_gps_format = "nmea"
+    gps_format_state = ModeState(initial_gps_format)
+    if DASHBOARD_ENABLED:
+        dashboard_state = DashboardState()
+        dashboard_root = _repo_root() / "simulation"
+        try:
+            dashboard_server = start_dashboard_server(
+                dashboard_state,
+                mode_state,
+                gps_format_state,
+                frame_state,
+                dashboard_root,
+                DASHBOARD_HOST,
+                DASHBOARD_PORT,
+                allowed_modes,
+                allowed_gps_formats,
+                open_browser=_can_auto_open_browser(),
+            )
+            dashboard_state.update(
+                {
+                    "status": "running",
+                    "url": f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}/",
+                }
+            )
+        except Exception as exc:
+            _ = exc
+            dashboard_state = None
     gps_origin = pixhawk_cfg.get("gps_origin", {})
     cfg_lat = gps_origin.get("lat")
     cfg_lon = gps_origin.get("lon")
@@ -1188,6 +1314,8 @@ def main():
     last_attitude = {"value": None}
     last_gps_input = {"value": None}
     last_baro = {"time": None, "height_m": None, "vz_mps": None}
+    last_runtime_mode = {"requested": None, "active": None, "drive": None}
+    last_runtime_gps_format = {"requested": None, "active": None}
 
     odom_send_interval_s = pixhawk_cfg.get(
         "odometry_send_interval_s", ODOMETRY_SEND_INTERVAL_S
@@ -1206,6 +1334,40 @@ def main():
         ubx_emitter=ubx_emitter,
         print_enabled=gps_output_print,
     )
+
+    def apply_gps_format_selection():
+        requested = _normalize_gps_format(gps_format_state.get())
+        if requested not in allowed_gps_formats:
+            requested = initial_gps_format
+            gps_format_state.set(requested)
+        active_nmea = None
+        active_ubx = None
+        if requested == "ubx":
+            active_ubx = ubx_emitter
+        elif requested == "nmea":
+            active_nmea = nmea_emitter
+        elif requested == "ubx_nmea":
+            active_nmea = nmea_emitter
+            active_ubx = ubx_emitter
+        active = "disabled"
+        if active_nmea is not None and active_ubx is not None:
+            active = "ubx_nmea"
+        elif active_ubx is not None:
+            active = "ubx"
+        elif active_nmea is not None:
+            active = "nmea"
+        gps_port_mode.nmea_emitter = active_nmea
+        gps_port_mode.ubx_emitter = active_ubx
+        if (
+            requested != last_runtime_gps_format["requested"]
+            or active != last_runtime_gps_format["active"]
+        ):
+            print(f"GPS output format -> requested={requested} active={active}")
+            last_runtime_gps_format["requested"] = requested
+            last_runtime_gps_format["active"] = active
+        return requested, active
+
+    apply_gps_format_selection()
     optical_flow_mav_cfg = pixhawk_cfg.get("optical_flow_mavlink", {})
     optical_flow_gps_port_mode = OpticalFlowGpsPortMode(
         gps_port_mode=gps_port_mode,
@@ -1511,6 +1673,7 @@ def main():
                 last_baro["vz_mps"] = vz_override_mps
 
         speed_accuracy_mps = _vo_speed_accuracy(inlier_ratio, flow_mad_px)
+        _gps_format_requested, gps_format_active = apply_gps_format_selection()
         current_mode = mode_state.get()
         active_output_mode = current_mode
         if current_mode not in allowed_modes:
@@ -1525,6 +1688,19 @@ def main():
             active_output_mode = (
                 optical_flow_output_mode if use_optical_flow else vo_output_mode
             )
+        drive_source = "optical" if active_output_mode in optical_modes else "vo"
+        if (
+            current_mode != last_runtime_mode["requested"]
+            or active_output_mode != last_runtime_mode["active"]
+            or drive_source != last_runtime_mode["drive"]
+        ):
+            print(
+                "Runtime mode -> "
+                f"requested={current_mode} active={active_output_mode} drive={drive_source}"
+            )
+            last_runtime_mode["requested"] = current_mode
+            last_runtime_mode["active"] = active_output_mode
+            last_runtime_mode["drive"] = drive_source
 
         if active_output_mode == "gps_mavlink":
             compass_yaw_deg = None
@@ -1603,6 +1779,7 @@ def main():
                 {
                     "timestamp": _safe_float(now),
                     "mode": active_output_mode,
+                    "gps_output_format": gps_format_active,
                     "vio_mode": vio_mode,
                     "source": source,
                     "drift_m": _safe_float(drift_m),
@@ -1740,7 +1917,21 @@ def main():
     if use_vo_pipeline:
         print("VO + Barometer started")
         try:
-            vo.run(on_update=on_update)
+            last_frame_time = {"time": 0.0}
+
+            def frame_callback(frame):
+                now = time.time()
+                if now - last_frame_time["time"] < 0.1:
+                    return
+                last_frame_time["time"] = now
+                try:
+                    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                    if ok:
+                        frame_state.update(buf.tobytes())
+                except Exception:
+                    return
+
+            vo.run(on_update=on_update, frame_callback=frame_callback)
         finally:
             if optical_reader is not None:
                 optical_reader.stop()
@@ -1767,10 +1958,24 @@ def main():
                     if sample is not None:
                         last_optical_flow["value"] = sample
                 _update_compass(now)
+                _gps_format_requested, gps_format_active = apply_gps_format_selection()
 
                 current_mode = mode_state.get()
                 if current_mode not in optical_modes:
                     current_mode = output_mode
+                drive_source = "optical"
+                if (
+                    current_mode != last_runtime_mode["requested"]
+                    or current_mode != last_runtime_mode["active"]
+                    or drive_source != last_runtime_mode["drive"]
+                ):
+                    print(
+                        "Runtime mode -> "
+                        f"requested={current_mode} active={current_mode} drive={drive_source}"
+                    )
+                    last_runtime_mode["requested"] = current_mode
+                    last_runtime_mode["active"] = current_mode
+                    last_runtime_mode["drive"] = drive_source
 
                 gps_serial_fix = None
                 if gps_serial_reader is not None:
@@ -1844,6 +2049,7 @@ def main():
                         {
                             "timestamp": _safe_float(now),
                             "mode": current_mode if current_mode in optical_modes else output_mode,
+                            "gps_output_format": gps_format_active,
                             "vio_mode": "vo",
                             "source": "optical_flow",
                             "drift_m": _safe_float(drift_m),

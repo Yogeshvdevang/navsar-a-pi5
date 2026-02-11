@@ -4,6 +4,8 @@ This repository implements a monocular visual odometry pipeline for a drone and 
 ```bash
 NAVISAR_DASHBOARD_OPEN=0 PYTHONPATH=src python -m navisar.main
 http://127.0.0.1:8765
+http://127.0.0.1:8765/gui.html
+
 ```
 
 ## What is implemented

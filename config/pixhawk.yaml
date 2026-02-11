@@ -22,12 +22,11 @@ gps_input:
   format: auto
   init_wait_s: 3
   min_fix_type: 3
-#!/usr/bin/env python3
 odom_gps_send_interval_s: 0.2
 odom_gps_fix_type: 3
 odom_gps_sats: 10
 odometry_send_interval_s: 0.04
-output_mode: optical_flow_gps_port # odometry, gps_mavlink, gps_port, optical_flow_mavlink, optical_flow_gps_port, optical_flow_then_vo
+output_mode: gps_port # odometry, gps_mavlink, gps_port, optical_flow_mavlink, optical_flow_gps_port, optical_flow_then_vo
 vio_mode: vo # vo, vio_imu
 
 vio_imu:
@@ -80,7 +79,7 @@ compass:
 
 gps_output:
   enabled: true
-  format: ubx 
+  format: ubx_nmea #ubx nmea #ubx_nmea
   port: /dev/ttyAMA0
   baud: 230400
   rate_hz: 10
@@ -121,4 +120,4 @@ gnss_monitor:
 gps_origin:
   lat: 12
   lon: 77
-  alt: 910
+  alt: 5

@@ -129,7 +129,7 @@ class MedianFlowVO:
             )
         return cv2.remap(gray, self._map1, self._map2, interpolation=cv2.INTER_LINEAR)
 
-    def run(self, on_update=None):
+    def run(self, on_update=None, frame_callback=None):
         ret, frame = self.camera_driver.read()
         if not ret:
             raise RuntimeError("Camera error: failed to read initial frame")
@@ -196,7 +196,7 @@ class MedianFlowVO:
                     0.0,
                 )
 
-            if self.show_window:
+            if self.show_window or frame_callback is not None:
                 vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
                 self._draw_grid(vis)
                 self._mask = np.zeros_like(vis)
@@ -246,9 +246,12 @@ class MedianFlowVO:
                     (0, 255, 255),
                     2,
                 )
-                cv2.imshow(self.window_name, vis)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+                if frame_callback is not None:
+                    frame_callback(vis)
+                if self.show_window:
+                    cv2.imshow(self.window_name, vis)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
 
             self._prev_gray = gray
             self._prev_pts = next_pts.reshape(-1, 1, 2)
