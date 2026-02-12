@@ -494,6 +494,11 @@
         <button data-format="nmea">NMEA</button>
         <button data-format="ubx_nmea">UBX+NMEA</button>
       </div>
+      <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">Actions</div>
+      <div class="mode-buttons" id="rw-buttons">
+        <button data-action="read">Read</button>
+        <button data-action="write">Write</button>
+      </div>
 
       <div class="main">
         <div class="left-panel">
@@ -1297,6 +1302,7 @@
 
       const modeButtons = Array.from(document.querySelectorAll("#mode-buttons button"));
       const gpsFormatButtons = Array.from(document.querySelectorAll("#gps-format-buttons button"));
+      const rwButtons = Array.from(document.querySelectorAll("#rw-buttons button"));
       const setMode = async (mode) => {
         try {
           await fetch("/mode", {
@@ -1319,6 +1325,14 @@
           // ignore
         }
       };
+      const handleRead = () => {
+        // Placeholder for future read action.
+        console.log("Read clicked");
+      };
+      const handleWrite = () => {
+        // Placeholder for future write action.
+        console.log("Write clicked");
+      };
       modeButtons.forEach((btn) => {
         btn.addEventListener("click", () => {
           setMode(btn.dataset.mode);
@@ -1327,6 +1341,15 @@
       gpsFormatButtons.forEach((btn) => {
         btn.addEventListener("click", () => {
           setGpsFormat(btn.dataset.format);
+        });
+      });
+      rwButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          if (btn.dataset.action === "read") {
+            handleRead();
+          } else if (btn.dataset.action === "write") {
+            handleWrite();
+          }
         });
       });
 

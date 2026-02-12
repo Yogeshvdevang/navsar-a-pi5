@@ -26,7 +26,7 @@ odom_gps_send_interval_s: 0.2
 odom_gps_fix_type: 3
 odom_gps_sats: 10
 odometry_send_interval_s: 0.04
-output_mode: gps_port # odometry, gps_mavlink, gps_port, optical_flow_mavlink, optical_flow_gps_port, optical_flow_then_vo
+output_mode: optical_flow_gps_port # odometry, gps_mavlink, gps_port, optical_flow_mavlink, optical_flow_gps_port, optical_flow_then_vo
 vio_mode: vo # vo, vio_imu
 
 vio_imu:
