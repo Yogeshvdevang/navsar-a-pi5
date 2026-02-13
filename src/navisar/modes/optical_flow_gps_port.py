@@ -7,6 +7,10 @@ def _finite(value):
     return value is not None and float(value) == float(value) and abs(float(value)) != float("inf")
 
 
+def _clamp(value, low, high):
+    return max(low, min(high, value))
+
+
 class OpticalFlowGpsPortMode:
     """Integrate MTF-01 optical flow into ENU and emit GPS over serial."""
 
@@ -21,6 +25,11 @@ class OpticalFlowGpsPortMode:
         stationary_samples: int = 15,
         stationary_quality_min: int = 40,
         speed_scale: float = 1.0,
+        altitude_smoothing_alpha: float = 0.18,
+        altitude_jump_limit_m: float = 0.06,
+        altitude_deadband_m: float = 0.004,
+        altitude_min_m: float = 0.05,
+        altitude_max_m: float = 8.0,
         warn_interval_s: float = 2.0,
         max_gap_s: float = 1.0,
     ):
@@ -33,6 +42,11 @@ class OpticalFlowGpsPortMode:
         self.stationary_samples = int(stationary_samples)
         self.stationary_quality_min = int(stationary_quality_min)
         self.speed_scale = float(speed_scale)
+        self.altitude_smoothing_alpha = float(altitude_smoothing_alpha)
+        self.altitude_jump_limit_m = float(altitude_jump_limit_m)
+        self.altitude_deadband_m = float(altitude_deadband_m)
+        self.altitude_min_m = float(altitude_min_m)
+        self.altitude_max_m = float(altitude_max_m)
         self.warn_interval_s = float(warn_interval_s)
         self.max_gap_s = float(max_gap_s)
         self._last_warn = 0.0
@@ -45,6 +59,7 @@ class OpticalFlowGpsPortMode:
         self._vy_f = 0.0
         self._stationary_count = 0
         self._origin = None
+        self._alt_filtered_m = None
         self.last_payload = None
 
     def _warn(self, now, message):
@@ -61,6 +76,7 @@ class OpticalFlowGpsPortMode:
         self._vx_f = 0.0
         self._vy_f = 0.0
         self._stationary_count = 0
+        self._alt_filtered_m = None
         self._origin = origin
 
     def handle(
@@ -146,14 +162,32 @@ class OpticalFlowGpsPortMode:
         self._last_time_s = now
         self._last_time_ms = sample.time_ms
 
-        alt_m = alt_override_m
-        if alt_m is not None and _finite(alt_m):
-            self._z_m = float(alt_m)
+        raw_alt_m = None
+        if alt_override_m is not None and _finite(alt_override_m):
+            raw_alt_m = float(alt_override_m)
         elif sample.dist_ok:
-            self._z_m = float(sample.distance_mm) / 1000.0
+            raw_alt_m = float(sample.distance_mm) / 1000.0
 
-        if alt_m is None and sample.dist_ok:
-            alt_m = self._z_m
+        if raw_alt_m is not None and _finite(raw_alt_m):
+            raw_alt_m = _clamp(raw_alt_m, self.altitude_min_m, self.altitude_max_m)
+            if self._alt_filtered_m is None:
+                self._alt_filtered_m = raw_alt_m
+            else:
+                jump_limit = max(0.0, self.altitude_jump_limit_m)
+                if jump_limit > 0.0:
+                    delta = raw_alt_m - self._alt_filtered_m
+                    if abs(delta) > jump_limit:
+                        raw_alt_m = self._alt_filtered_m + (
+                            jump_limit if delta > 0 else -jump_limit
+                        )
+                alpha = _clamp(self.altitude_smoothing_alpha, 0.0, 1.0)
+                filtered_alt = alpha * raw_alt_m + (1.0 - alpha) * self._alt_filtered_m
+                if abs(filtered_alt - self._alt_filtered_m) < self.altitude_deadband_m:
+                    filtered_alt = self._alt_filtered_m
+                self._alt_filtered_m = filtered_alt
+            self._z_m = self._alt_filtered_m
+
+        alt_m = self._z_m if _finite(self._z_m) else None
 
         self.gps_port_mode.handle(
             now,

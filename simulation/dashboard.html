@@ -104,6 +104,33 @@
         color: var(--accent);
       }
 
+      .actions-bar {
+        margin-top: 10px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .write-btn {
+        border: 1px solid rgba(126, 242, 157, 0.5);
+        background: rgba(126, 242, 157, 0.15);
+        color: var(--accent-3);
+        padding: 8px 14px;
+        border-radius: 999px;
+        font-family: "IBM Plex Mono", ui-monospace, monospace;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+      }
+
+      .write-status {
+        color: var(--muted);
+        font-size: 12px;
+        font-family: "IBM Plex Mono", ui-monospace, monospace;
+      }
+
       .grid {
         display: grid;
         gap: 20px;
@@ -475,6 +502,10 @@
       <button data-mode="gps_mavlink">GPS MAVLINK</button>
       <button data-mode="gps_port">GPS PORT</button>
       <button data-mode="optical_flow_mavlink">OPTICAL FLOW</button>
+    </div>
+    <div class="actions-bar">
+      <button id="write-mode-btn" class="write-btn">Write</button>
+      <span id="write-status" class="write-status">Select mode, then press Write to save in pixhawk.yaml.</span>
     </div>
 
     <main class="grid" style="margin-top: 18px">
@@ -1481,6 +1512,9 @@
 
       const modeButtons = Array.from(document.querySelectorAll(".mode-picker button"));
       let selectedMode = "odometry";
+      let hasPendingMode = false;
+      const writeModeBtn = document.getElementById("write-mode-btn");
+      const writeStatus = document.getElementById("write-status");
 
       const updateModeBlocks = (mode) => {
         Object.entries(modeBlocks).forEach(([key, block]) => {
@@ -1496,9 +1530,49 @@
       modeButtons.forEach((btn) => {
         btn.addEventListener("click", () => {
           selectedMode = btn.dataset.mode;
+          hasPendingMode = true;
+          if (writeStatus) {
+            writeStatus.textContent = `Pending mode: ${selectedMode}. Press Write to apply and save.`;
+          }
           updateModeBlocks(selectedMode);
         });
       });
+
+      const writeModeSelection = async () => {
+        if (!writeModeBtn) {
+          return;
+        }
+        writeModeBtn.disabled = true;
+        if (writeStatus) {
+          writeStatus.textContent = `Writing ${selectedMode}...`;
+        }
+        try {
+          const res = await fetch("/persist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: selectedMode }),
+          });
+          const payload = await res.json();
+          if (!res.ok || !payload?.ok) {
+            throw new Error(payload?.error || "write failed");
+          }
+          selectedMode = payload?.runtime?.mode || payload?.written?.output_mode || selectedMode;
+          hasPendingMode = false;
+          if (writeStatus) {
+            writeStatus.textContent = `Saved mode: ${selectedMode} in pixhawk.yaml`;
+          }
+          updateModeBlocks(selectedMode);
+        } catch (err) {
+          if (writeStatus) {
+            writeStatus.textContent = `Write failed: ${err?.message || "request error"}`;
+          }
+        } finally {
+          writeModeBtn.disabled = false;
+        }
+      };
+      if (writeModeBtn) {
+        writeModeBtn.addEventListener("click", writeModeSelection);
+      }
 
       const dataUrl = (() => {
         if (window.location.protocol === "file:") {
@@ -1811,7 +1885,7 @@
           ]);
 
           const uiMode = data.mode === "optical_flow_gps_port" ? "optical_flow_mavlink" : data.mode;
-          if (uiMode && modeBlocks[uiMode] && selectedMode !== uiMode) {
+          if (!hasPendingMode && uiMode && modeBlocks[uiMode] && selectedMode !== uiMode) {
             selectedMode = uiMode;
           }
           updateModeBlocks(selectedMode);

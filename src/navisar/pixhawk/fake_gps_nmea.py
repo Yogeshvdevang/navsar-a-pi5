@@ -74,7 +74,7 @@ def gga_sentence(
     body = (
         f"GPGGA,{time_str},{lat_str},{lat_dir},"
         f"{lon_str},{lon_dir},{fix_quality},{satellites:02d},"
-        f"{hdop:.1f},{alt_m:.1f},M,{geoid_sep_m:.1f},M,,"
+        f"{hdop:.1f},{alt_m:.4f},M,{geoid_sep_m:.4f},M,,"
     )
     return _wrap_nmea(body)
 

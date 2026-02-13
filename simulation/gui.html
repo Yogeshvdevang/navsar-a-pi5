@@ -90,6 +90,18 @@
         letter-spacing: 0.08em;
       }
 
+      .access-label {
+        font-size: 12px;
+        color: var(--muted);
+        letter-spacing: 0.02em;
+        word-break: break-all;
+      }
+
+      .access-label a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
       .mode-buttons {
         display: flex;
         flex-wrap: wrap;
@@ -480,6 +492,12 @@
           <span>DRIVE <strong id="drive-mode">--</strong></span>
         </div>
       </div>
+      <div class="access-label">
+        Phone URL: <a id="access-url" href="#" target="_blank" rel="noopener noreferrer">--</a>
+      </div>
+      <div class="access-label">
+        Start/Stop Control: <a id="control-url" href="#" target="_blank" rel="noopener noreferrer">--</a>
+      </div>
       <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">Output Mode</div>
       <div class="mode-buttons" id="mode-buttons">
         <button data-mode="optical_flow_gps_port">Optical GPS</button>
@@ -498,6 +516,9 @@
       <div class="mode-buttons" id="rw-buttons">
         <button data-action="read">Read</button>
         <button data-action="write">Write</button>
+        <button data-action="zero-alt">Auto Zero Altitude</button>
+        <button data-action="start-script">Start Script</button>
+        <button data-action="stop-script">Stop Script</button>
       </div>
 
       <div class="main">
@@ -662,6 +683,41 @@
       const setText = (id, value, digits) => {
         const el = document.getElementById(id);
         if (el) el.textContent = fmt(value, digits);
+      };
+
+      const pickBestAccessUrl = (data) => {
+        const urls = Array.isArray(data?.urls) ? data.urls.filter((u) => typeof u === "string" && u.length > 0) : [];
+        const single = typeof data?.url === "string" && data.url ? data.url : null;
+        const candidates = [...urls, ...(single ? [single] : [])];
+        if (!candidates.length) {
+          return window.location.origin && window.location.origin !== "null"
+            ? `${window.location.origin}/`
+            : null;
+        }
+        const nonLoopback = candidates.find(
+          (u) => !u.includes("127.0.0.1") && !u.includes("localhost")
+        );
+        return nonLoopback || candidates[0];
+      };
+
+      const updateAccessUrl = (data) => {
+        const el = document.getElementById("access-url");
+        if (!el) return;
+        const url = pickBestAccessUrl(data);
+        if (!url) {
+          el.textContent = "--";
+          el.setAttribute("href", "#");
+          return;
+        }
+        el.textContent = url;
+        el.setAttribute("href", url);
+
+        const controlEl = document.getElementById("control-url");
+        if (controlEl) {
+          const controlUrl = `${window.location.protocol}//${window.location.hostname}:8770/`;
+          controlEl.textContent = controlUrl;
+          controlEl.setAttribute("href", controlUrl);
+        }
       };
 
       const updateCompassWidget = (prefix, heading) => {
@@ -1052,6 +1108,7 @@
           const res = await fetch(dataUrl, { cache: "no-store" });
           const data = await res.json();
           window.__lastData = data;
+          updateAccessUrl(data);
 
           setText("mode", data.mode, 0);
           setText("source", data.source, 0);
@@ -1098,7 +1155,18 @@
           const rawVy = isOptical
             ? asFiniteNumber(opt?.speed_y, opt?.flow_vy, 0) || 0
             : asFiniteNumber(data.camera?.vy, 0) || 0;
-          const rawAltitude = asFiniteNumber(data.sensors?.barometer?.height_m, data.camera?.z, 0) || 0;
+          const opticalHeightM = asFiniteNumber(
+            opt?.distance_mm != null ? opt.distance_mm / 1000 : null,
+            opt?.dist_cm != null ? opt.dist_cm / 100 : null
+          );
+          const rawAltitude =
+            asFiniteNumber(
+              data.sensors?.barometer?.height_m,
+              data.fused?.z,
+              opticalHeightM,
+              data.camera?.z,
+              data.gps?.local?.z
+            ) ?? 0;
           if (!filterState.ready) {
             filterState.vx = rawVx;
             filterState.vy = rawVy;
@@ -1135,7 +1203,7 @@
           );
           setText("nav-lat", lat, 6);
           setText("nav-lon", lon, 6);
-          setText("nav-alt", alt, 2);
+          setText("nav-alt", alt, 5);
           setText("nav-spd", speed, 2);
           const heading = asFiniteNumber(
             data.heading?.deg,
@@ -1326,12 +1394,157 @@
         }
       };
       const handleRead = () => {
-        // Placeholder for future read action.
-        console.log("Read clicked");
+        (async () => {
+          try {
+            const res = await fetch("/persist", { cache: "no-store" });
+            const payload = await res.json();
+            const persistedMode = payload?.persisted?.output_mode;
+            const persistedFormat = payload?.persisted?.gps_format;
+            if (persistedMode) {
+              await setMode(persistedMode);
+              updateModeButtons(persistedMode);
+            }
+            if (persistedFormat) {
+              await setGpsFormat(persistedFormat);
+              updateGpsFormatButtons(persistedFormat);
+            }
+            const nowStr = new Date().toLocaleTimeString();
+            const logEl = document.getElementById("output-log");
+            if (logEl) {
+              logState.lines.push(
+                `[${nowStr}] read persisted mode=${persistedMode || "--"} format=${persistedFormat || "--"}`
+              );
+              if (logState.lines.length > logState.max) {
+                logState.lines.splice(0, logState.lines.length - logState.max);
+              }
+              logEl.textContent = logState.lines.join("\n");
+            }
+          } catch (_) {
+            const logEl = document.getElementById("output-log");
+            if (logEl) {
+              const nowStr = new Date().toLocaleTimeString();
+              logState.lines.push(`[${nowStr}] read failed`);
+              if (logState.lines.length > logState.max) {
+                logState.lines.splice(0, logState.lines.length - logState.max);
+              }
+              logEl.textContent = logState.lines.join("\n");
+            }
+          }
+        })();
       };
       const handleWrite = () => {
-        // Placeholder for future write action.
-        console.log("Write clicked");
+        (async () => {
+          try {
+            const res = await fetch("/persist", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: "{}",
+            });
+            const payload = await res.json();
+            const nowStr = new Date().toLocaleTimeString();
+            const logEl = document.getElementById("output-log");
+            if (logEl) {
+              if (payload?.ok) {
+                logState.lines.push(
+                  `[${nowStr}] write ok mode=${payload?.written?.output_mode} format=${payload?.written?.gps_format} offset=${Number(payload?.written?.altitude_offset_m).toFixed(3)}`
+                );
+              } else {
+                logState.lines.push(`[${nowStr}] write failed`);
+              }
+              if (logState.lines.length > logState.max) {
+                logState.lines.splice(0, logState.lines.length - logState.max);
+              }
+              logEl.textContent = logState.lines.join("\n");
+            }
+          } catch (_) {
+            const logEl = document.getElementById("output-log");
+            if (logEl) {
+              const nowStr = new Date().toLocaleTimeString();
+              logState.lines.push(`[${nowStr}] write failed`);
+              if (logState.lines.length > logState.max) {
+                logState.lines.splice(0, logState.lines.length - logState.max);
+              }
+              logEl.textContent = logState.lines.join("\n");
+            }
+          }
+        })();
+      };
+      const handleAutoZeroAltitude = async () => {
+        try {
+          const res = await fetch("/altitude-zero", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          });
+          const payload = await res.json();
+          const nowStr = new Date().toLocaleTimeString();
+          const logEl = document.getElementById("output-log");
+          if (logEl) {
+            if (payload?.ok) {
+              const measured = Number(payload.measured_altitude_m);
+              const offset = Number(payload.offset_m);
+              logState.lines.push(
+                `[${nowStr}] auto-zero ok measured=${measured.toFixed(3)}m new_offset=${offset.toFixed(3)}m`
+              );
+            } else {
+              logState.lines.push(
+                `[${nowStr}] auto-zero failed: ${payload?.error || "unknown error"}`
+              );
+            }
+            if (logState.lines.length > logState.max) {
+              logState.lines.splice(0, logState.lines.length - logState.max);
+            }
+            logEl.textContent = logState.lines.join("\n");
+          }
+        } catch (err) {
+          const logEl = document.getElementById("output-log");
+          if (logEl) {
+            const nowStr = new Date().toLocaleTimeString();
+            logState.lines.push(`[${nowStr}] auto-zero failed: request error`);
+            if (logState.lines.length > logState.max) {
+              logState.lines.splice(0, logState.lines.length - logState.max);
+            }
+            logEl.textContent = logState.lines.join("\n");
+          }
+        }
+      };
+      const handleServiceAction = async (action) => {
+        const controlUrl = `${window.location.protocol}//${window.location.hostname}:8770/service`;
+        try {
+          const res = await fetch(controlUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action }),
+          });
+          const payload = await res.json();
+          const nowStr = new Date().toLocaleTimeString();
+          const logEl = document.getElementById("output-log");
+          if (logEl) {
+            if (payload?.ok) {
+              logState.lines.push(
+                `[${nowStr}] service ${action} ok (${payload?.service || "navisar.service"})`
+              );
+            } else {
+              logState.lines.push(
+                `[${nowStr}] service ${action} failed: ${payload?.message || payload?.error || "unknown error"}`
+              );
+            }
+            if (logState.lines.length > logState.max) {
+              logState.lines.splice(0, logState.lines.length - logState.max);
+            }
+            logEl.textContent = logState.lines.join("\n");
+          }
+        } catch (_) {
+          const logEl = document.getElementById("output-log");
+          if (logEl) {
+            const nowStr = new Date().toLocaleTimeString();
+            logState.lines.push(`[${nowStr}] service ${action} failed: request error`);
+            if (logState.lines.length > logState.max) {
+              logState.lines.splice(0, logState.lines.length - logState.max);
+            }
+            logEl.textContent = logState.lines.join("\n");
+          }
+        }
       };
       modeButtons.forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -1349,6 +1562,12 @@
             handleRead();
           } else if (btn.dataset.action === "write") {
             handleWrite();
+          } else if (btn.dataset.action === "zero-alt") {
+            handleAutoZeroAltitude();
+          } else if (btn.dataset.action === "start-script") {
+            handleServiceAction("start");
+          } else if (btn.dataset.action === "stop-script") {
+            handleServiceAction("stop");
           }
         });
       });
@@ -1356,9 +1575,7 @@
       const updateModeButtons = (mode, allowed = null) => {
         modeButtons.forEach((btn) => {
           btn.classList.toggle("active", btn.dataset.mode === mode);
-          if (Array.isArray(allowed)) {
-            btn.disabled = !allowed.includes(btn.dataset.mode);
-          }
+          btn.disabled = false;
         });
       };
 
@@ -1376,9 +1593,7 @@
       const updateGpsFormatButtons = (format, allowed = null) => {
         gpsFormatButtons.forEach((btn) => {
           btn.classList.toggle("active", btn.dataset.format === format);
-          if (Array.isArray(allowed)) {
-            btn.disabled = !allowed.includes(btn.dataset.format);
-          }
+          btn.disabled = false;
         });
       };
       const refreshGpsFormatState = async () => {

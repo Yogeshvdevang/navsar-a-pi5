@@ -78,6 +78,95 @@ class MavlinkInterface:
             0,
         )
 
+    def set_mode(self, mode_name):
+        """Set Pixhawk mode by name (for example: GUIDED)."""
+        if not mode_name:
+            return False
+        mapping = self.master.mode_mapping() or {}
+        mode_id = mapping.get(str(mode_name).upper())
+        if mode_id is None:
+            return False
+        self.master.set_mode(mode_id)
+        return True
+
+    def arm(self, arm=True):
+        """Arm or disarm the vehicle."""
+        self.master.mav.command_long_send(
+            self.master.target_system,
+            self.master.target_component,
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+            0,
+            1.0 if arm else 0.0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+
+    def takeoff(self, altitude_m):
+        """Send NAV_TAKEOFF command to target altitude in meters (relative)."""
+        self.master.mav.command_long_send(
+            self.master.target_system,
+            self.master.target_component,
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            float(altitude_m),
+        )
+
+    def goto_local_ned(self, north_m, east_m, down_m, yaw_rad=0.0):
+        """Send a local-NED position target setpoint."""
+        # Position-only control (ignore velocity/accel/yaw_rate fields).
+        type_mask = 3576
+        self.master.mav.set_position_target_local_ned_send(
+            int(time.time() * 1000) % (2**32),
+            self.master.target_system,
+            self.master.target_component,
+            mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+            int(type_mask),
+            float(north_m),
+            float(east_m),
+            float(down_m),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            float(yaw_rad),
+            0.0,
+        )
+
+    def goto_global_relative_alt(self, lat_deg, lon_deg, rel_alt_m, yaw_rad=0.0):
+        """Send a global-int (lat/lon) setpoint with relative altitude."""
+        # Position-only control (ignore velocity/accel/yaw_rate fields).
+        type_mask = 3576
+        self.master.mav.set_position_target_global_int_send(
+            int(time.time() * 1000) % (2**32),
+            self.master.target_system,
+            self.master.target_component,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+            int(type_mask),
+            int(float(lat_deg) * 1e7),
+            int(float(lon_deg) * 1e7),
+            float(rel_alt_m),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            float(yaw_rad),
+            0.0,
+        )
+
     def recv_gps(self):
         """Receive and parse the latest GPS message."""
         msg = self.recv_gps_raw()

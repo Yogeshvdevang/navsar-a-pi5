@@ -167,7 +167,7 @@ class GpsPortMode:
                 f"{prefix}:\n"
                 f"LAT : {abs(lat):.7f}° {'N' if lat >= 0 else 'S'}\n"
                 f"LON : {abs(lon):.7f}° {'E' if lon >= 0 else 'W'}\n"
-                f"ALT : {alt_m:.1f} m\n"
+                f"ALT : {alt_m:.4f} m\n"
                 f"SPD : {speed_mps:.2f} m/s\n"
                 f"HDG : {heading_deg:.1f}°\n"
                 f"SATS: {sats_text}\n"

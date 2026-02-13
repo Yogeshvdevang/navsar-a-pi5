@@ -1,4 +1,3 @@
-# Pixhawk parameters
 use_mavlink: true
 use_barometer: true
 use_imu_fusion: true
@@ -7,11 +6,11 @@ device: /dev/ttyAMA0
 baud: 115200
 attitude_rate_hz: 30.0
 fallback_altitude_m: 1.0
+altitude_offset_m: -0.141
 mavlink_source:
   system_id: 1
   component_id: 192
   rangefinder_component_id: 191
-
 gps_drift_threshold_m: 5.0
 gps_timeout_s: 2.0
 gps_min_fix_type: 3
@@ -26,9 +25,8 @@ odom_gps_send_interval_s: 0.2
 odom_gps_fix_type: 3
 odom_gps_sats: 10
 odometry_send_interval_s: 0.04
-output_mode: optical_flow_gps_port # odometry, gps_mavlink, gps_port, optical_flow_mavlink, optical_flow_gps_port, optical_flow_then_vo
-vio_mode: vo # vo, vio_imu
-
+output_mode: optical_flow_gps_port
+vio_mode: vo
 vio_imu:
   print: true
   print_interval_s: 0.5
@@ -37,35 +35,38 @@ gps_serial:
   port: /dev/serial0
   baud: 9600
   format: auto
-
 optical_flow:
   enabled: true
+  data_mode: stable
   port: /dev/ttyAMA3
   baud: 115200
-  rate_hz: 100.0
+  rate_hz: 60.0
   heartbeat_interval_s: 0.6
   print: false
-  max_flow_raw: 200
-
+  max_flow_raw: 120
+  altitude_scale: 1.1
+  altitude_smoothing_alpha: 0.35
+  altitude_jump_limit_m: 0.12
+  altitude_deadband_m: 0.0005
+  altitude_min_m: 0.0
+  altitude_max_m: 8.0
 optical_flow_mavlink:
   send_interval_s: 0.05
   print: true
   range_min_m: 0.01
   range_max_m: 8.0
-  min_quality: 70
-  max_speed_mps: 1.0
-  deadband_mps: 0.10
-  smoothing_alpha: 0.10
-  stationary_speed_mps: 0.04
-  stationary_samples: 20
-  stationary_quality_min: 70
+  min_quality: 80
+  max_speed_mps: 0.6
+  deadband_mps: 0.14
+  smoothing_alpha: 0.08
+  stationary_speed_mps: 0.03
+  stationary_samples: 30
+  stationary_quality_min: 80
   speed_scale: 0.01
-
 optical_flow_vo:
   switch_m: 8.0
   optical_flow_output_mode: optical_flow_gps_port
   vo_output_mode: gps_mavlink
-
 compass:
   enabled: true
   i2c_bus: 1
@@ -76,10 +77,9 @@ compass:
   heading_smoothing_alpha: 0.1
   heading_max_delta_deg: 5.0
   heading_jump_reject_deg: 20.0
-
 gps_output:
   enabled: true
-  format: ubx_nmea #ubx nmea #ubx_nmea
+  format: ubx
   port: /dev/ttyAMA0
   baud: 230400
   rate_hz: 10
@@ -89,7 +89,6 @@ gps_output:
   update_s: 7
   print: true
   raw_print: true
-
 vps_gps:
   send_interval_s: 0.1
   mavlink_send_interval_s: 0.1
@@ -98,11 +97,9 @@ vps_gps:
   print: false
   use_compass_yaw: true
   ignore_flags: 28
-
 print_gps_values: false
 print_baro_values: false
 print_interval_s: 0.5
-
 gnss_monitor:
   spoof_detector:
     enabled: false
@@ -116,8 +113,20 @@ gnss_monitor:
     log_path: data/spoof_events.jsonl
     gcs_severity: warning
     min_interval_s: 2.0
-
 gps_origin:
   lat: 12
   lon: 77
   alt: 5
+flight_functions:
+  go_initial_to_final:
+    enabled: false
+    mode: gps
+    hold_before_takeoff_s: 10
+    initial_point:
+      lat: 12.9715987
+      lon: 77.594566
+      alt_m: 5.0
+    final_point:
+      lat: 12.9721
+      lon: 77.5953
+      alt_m: 8.0

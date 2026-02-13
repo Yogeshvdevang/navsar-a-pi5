@@ -5,6 +5,8 @@ import sys
 import time
 import math
 import json
+import socket
+import subprocess
 import threading
 import multiprocessing
 import http.server
@@ -43,6 +45,8 @@ from navisar.gnss_monitor.spoof_detector import SpoofDetector
 from navisar.gnss_monitor.spoof_reporter import SpoofReporter, SpoofReportConfig
 from navisar.vps.visual_slam import VisualSlam, SlamConfig
 from navisar.vps.orbslam3_runner import OrbSlam3Runner, OrbSlam3Config
+
+_CONFIG_WRITE_LOCK = threading.Lock()
 
 # ================= CONFIG =================
 CAMERA_INDEX = 0
@@ -150,13 +154,14 @@ DASHBOARD_ENABLED = os.getenv("NAVISAR_DASHBOARD_ENABLED", "1").lower() not in (
     "false",
     "no",
 )
-DASHBOARD_HOST = os.getenv("NAVISAR_DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_HOST = os.getenv("NAVISAR_DASHBOARD_HOST", "0.0.0.0")
 DASHBOARD_PORT = int(os.getenv("NAVISAR_DASHBOARD_PORT", "8765"))
 DASHBOARD_OPEN_BROWSER = os.getenv("NAVISAR_DASHBOARD_OPEN", "0").lower() not in (
     "0",
     "false",
     "no",
 )
+NAVISAR_SERVICE_NAME = os.getenv("NAVISAR_SERVICE_NAME", "navisar.service")
 
 
 def _can_auto_open_browser():
@@ -174,6 +179,26 @@ def _can_auto_open_browser():
 def _repo_root():
     """Return the repository root path."""
     return Path(__file__).resolve().parents[2]
+
+
+def _discover_local_ipv4_addresses():
+    """Return a sorted list of non-loopback local IPv4 addresses."""
+    addresses = set()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            addresses.add(sock.getsockname()[0])
+    except Exception:
+        pass
+    try:
+        host_name = socket.gethostname()
+        for info in socket.getaddrinfo(host_name, None, socket.AF_INET, socket.SOCK_STREAM):
+            ip = info[4][0]
+            if ip and not ip.startswith("127."):
+                addresses.add(ip)
+    except Exception:
+        pass
+    return sorted(addresses)
 
 
 def _load_yaml(path):
@@ -195,6 +220,66 @@ def _load_configs():
         "vio": _load_yaml(config_dir / "vio.yaml"),
         "pixhawk": _load_yaml(config_dir / "pixhawk.yaml"),
     }
+
+
+def _persist_pixhawk_runtime_settings(
+    pixhawk_config_path,
+    mode_state,
+    gps_format_state,
+    altitude_offset_state,
+):
+    """Persist runtime dashboard selections into config/pixhawk.yaml."""
+    path = Path(pixhawk_config_path)
+    with _CONFIG_WRITE_LOCK:
+        cfg = _load_yaml(path)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        mode = str(mode_state.get()).strip().lower()
+        gps_format = _normalize_gps_format(gps_format_state.get())
+        offset_m = float(altitude_offset_state.get())
+
+        cfg["output_mode"] = mode
+        gps_output_cfg = cfg.get("gps_output")
+        if not isinstance(gps_output_cfg, dict):
+            gps_output_cfg = {}
+        gps_output_cfg["format"] = gps_format
+        cfg["gps_output"] = gps_output_cfg
+        cfg["altitude_offset_m"] = round(offset_m, 6)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(cfg, handle, sort_keys=False)
+    return {
+        "output_mode": mode,
+        "gps_format": gps_format,
+        "altitude_offset_m": round(offset_m, 6),
+    }
+
+
+def _run_service_command(action, service_name):
+    """Run a systemd command for the NAVISAR service."""
+    cmd = ["systemctl", action, service_name]
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", *cmd],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        return False, str(exc)
+
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode == 0:
+        return True, out or err
+    if "a password is required" in (err or "").lower():
+        return (
+            False,
+            "sudo passwordless rule is required for service control "
+            "(see setup steps in documentation).",
+        )
+    return False, err or out or f"exit code {proc.returncode}"
 
 
 def _safe_float(value):
@@ -304,14 +389,85 @@ def _normalize_gps_format(value):
     return "nmea"
 
 
+def _gps_point(point):
+    """Parse a GPS point config into (lat_deg, lon_deg, rel_alt_m)."""
+    point = point or {}
+    lat = _safe_float(point.get("lat"))
+    lon = _safe_float(point.get("lon"))
+    rel_alt = _safe_float(point.get("alt_m"))
+    if lat is None or lon is None:
+        raise ValueError("gps point requires numeric lat and lon")
+    if rel_alt is None:
+        rel_alt = 1.0
+    return float(lat), float(lon), float(rel_alt)
+
+
+def _run_go_initial_to_final(mavlink_interface, pixhawk_cfg):
+    """Execute configured GPS flight function: hold -> takeoff -> initial -> final."""
+    flight_cfg = pixhawk_cfg.get("flight_functions", {})
+    mission_cfg = flight_cfg.get("go_initial_to_final", {})
+    if not isinstance(mission_cfg, dict):
+        return
+    if not bool(mission_cfg.get("enabled", False)):
+        return
+
+    hold_s = _safe_float(mission_cfg.get("hold_before_takeoff_s"))
+    if hold_s is None:
+        hold_s = 10.0
+    hold_s = max(0.0, hold_s)
+
+    initial_point = mission_cfg.get("initial_point", {})
+    final_point = mission_cfg.get("final_point", {})
+    mode = str(mission_cfg.get("mode", "gps")).strip().lower()
+    if mode != "gps":
+        print("flight_functions.go_initial_to_final is GPS-only; forcing mode='gps'.")
+    initial_lat, initial_lon, initial_alt = _gps_point(initial_point)
+    final_lat, final_lon, final_alt = _gps_point(final_point)
+    takeoff_alt_m = max(1.0, initial_alt, final_alt)
+
+    print(
+        "Flight function go_initial_to_final: "
+        f"mode=gps hold={hold_s:.1f}s takeoff_alt={takeoff_alt_m:.1f}m"
+    )
+    if hold_s > 0.0:
+        time.sleep(hold_s)
+
+    try:
+        if not mavlink_interface.set_mode("GUIDED"):
+            print("Warning: unable to set GUIDED mode (mode mapping missing).")
+        time.sleep(0.5)
+        mavlink_interface.arm(True)
+        time.sleep(2.0)
+        mavlink_interface.takeoff(takeoff_alt_m)
+        time.sleep(3.0)
+
+        def _stream_global_target(lat_deg, lon_deg, rel_alt_m, duration_s):
+            end_t = time.time() + duration_s
+            while time.time() < end_t:
+                mavlink_interface.goto_global_relative_alt(lat_deg, lon_deg, rel_alt_m)
+                time.sleep(0.2)
+
+        _stream_global_target(initial_lat, initial_lon, initial_alt, duration_s=4.0)
+        _stream_global_target(final_lat, final_lon, final_alt, duration_s=8.0)
+        print(
+            "Flight function go_initial_to_final completed: "
+            f"initial_gps=({initial_lat:.7f},{initial_lon:.7f},{initial_alt:.2f}) "
+            f"final_gps=({final_lat:.7f},{final_lon:.7f},{final_alt:.2f})"
+        )
+    except Exception as exc:
+        print(f"Flight function go_initial_to_final failed: {exc}")
+
+
 def _make_dashboard_handler(
     state,
     mode_state,
     gps_format_state,
+    altitude_offset_state,
     frame_state,
     root_dir,
     allowed_modes,
     allowed_gps_formats,
+    pixhawk_config_path,
 ):
     class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -319,7 +475,7 @@ def _make_dashboard_handler(
 
         def do_GET(self):
             if self.path in ("/", "/index.html"):
-                self.path = "/dashboard.html"
+                self.path = "/gui.html"
             if self.path.startswith("/data"):
                 payload = state.snapshot()
                 data = json.dumps(payload).encode("utf-8")
@@ -356,6 +512,69 @@ def _make_dashboard_handler(
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            if self.path.startswith("/altitude-offset"):
+                payload = {
+                    "offset_m": float(altitude_offset_state.get()),
+                }
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if self.path.startswith("/persist"):
+                persisted_cfg = _load_yaml(Path(pixhawk_config_path))
+                gps_output_cfg = (
+                    persisted_cfg.get("gps_output")
+                    if isinstance(persisted_cfg, dict)
+                    else {}
+                )
+                if not isinstance(gps_output_cfg, dict):
+                    gps_output_cfg = {}
+                payload = {
+                    "runtime": {
+                        "mode": mode_state.get(),
+                        "gps_format": gps_format_state.get(),
+                        "offset_m": float(altitude_offset_state.get()),
+                    },
+                    "persisted": {
+                        "output_mode": persisted_cfg.get("output_mode")
+                        if isinstance(persisted_cfg, dict)
+                        else None,
+                        "gps_format": gps_output_cfg.get("format"),
+                        "altitude_offset_m": persisted_cfg.get("altitude_offset_m")
+                        if isinstance(persisted_cfg, dict)
+                        else None,
+                    },
+                    "config_path": str(pixhawk_config_path),
+                }
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if self.path.startswith("/service"):
+                active_ok, active_msg = _run_service_command(
+                    "is-active", NAVISAR_SERVICE_NAME
+                )
+                payload = {
+                    "service": NAVISAR_SERVICE_NAME,
+                    "ok": active_ok,
+                    "state": active_msg if active_msg else "unknown",
+                }
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(200 if active_ok else 500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if self.path.startswith("/video"):
                 self.send_response(200)
                 self.send_header("Age", "0")
@@ -378,7 +597,14 @@ def _make_dashboard_handler(
             return super().do_GET()
 
         def do_POST(self):
-            if not self.path.startswith("/mode") and not self.path.startswith("/gps-format"):
+            if (
+                not self.path.startswith("/mode")
+                and not self.path.startswith("/gps-format")
+                and not self.path.startswith("/altitude-zero")
+                and not self.path.startswith("/altitude-offset")
+                and not self.path.startswith("/persist")
+                and not self.path.startswith("/service")
+            ):
                 return super().do_POST()
             length = int(self.headers.get("Content-Length", "0") or 0)
             raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -397,11 +623,17 @@ def _make_dashboard_handler(
                         {"ok": False, "mode": mode_state.get(), "allowed": sorted(allowed_modes)}
                     ).encode("utf-8")
                     self.send_response(400)
-            else:
+            elif self.path.startswith("/gps-format"):
                 requested = _normalize_gps_format(payload.get("format"))
-                if requested in allowed_gps_formats:
+                if requested in {"ubx", "nmea", "ubx_nmea"}:
                     gps_format_state.set(requested)
-                    data = json.dumps({"ok": True, "format": requested}).encode("utf-8")
+                    data = json.dumps(
+                        {
+                            "ok": True,
+                            "format": requested,
+                            "allowed": list(allowed_gps_formats),
+                        }
+                    ).encode("utf-8")
                     self.send_response(200)
                 else:
                     data = json.dumps(
@@ -412,6 +644,167 @@ def _make_dashboard_handler(
                         }
                     ).encode("utf-8")
                     self.send_response(400)
+            elif self.path.startswith("/altitude-offset"):
+                requested = payload.get("offset_m")
+                try:
+                    offset_m = float(requested)
+                except (TypeError, ValueError):
+                    data = json.dumps(
+                        {"ok": False, "error": "offset_m must be numeric"}
+                    ).encode("utf-8")
+                    self.send_response(400)
+                else:
+                    altitude_offset_state.set(offset_m)
+                    data = json.dumps({"ok": True, "offset_m": offset_m}).encode("utf-8")
+                    self.send_response(200)
+            elif self.path.startswith("/persist"):
+                requested_mode = str(payload.get("mode", "")).strip().lower()
+                if requested_mode:
+                    if requested_mode not in allowed_modes:
+                        data = json.dumps(
+                            {
+                                "ok": False,
+                                "error": "invalid mode",
+                                "mode": mode_state.get(),
+                                "allowed_modes": sorted(allowed_modes),
+                            }
+                        ).encode("utf-8")
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+                    mode_state.set(requested_mode)
+
+                requested_format_raw = payload.get("format")
+                if requested_format_raw is not None:
+                    requested_format = _normalize_gps_format(requested_format_raw)
+                    if requested_format not in {"ubx", "nmea", "ubx_nmea"}:
+                        data = json.dumps(
+                            {
+                                "ok": False,
+                                "error": "invalid gps format",
+                                "format": gps_format_state.get(),
+                                "allowed_formats": list(allowed_gps_formats),
+                            }
+                        ).encode("utf-8")
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+                    gps_format_state.set(requested_format)
+
+                if "offset_m" in payload:
+                    try:
+                        altitude_offset_state.set(float(payload.get("offset_m")))
+                    except (TypeError, ValueError):
+                        data = json.dumps(
+                            {
+                                "ok": False,
+                                "error": "offset_m must be numeric",
+                            }
+                        ).encode("utf-8")
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+
+                written = _persist_pixhawk_runtime_settings(
+                    pixhawk_config_path=pixhawk_config_path,
+                    mode_state=mode_state,
+                    gps_format_state=gps_format_state,
+                    altitude_offset_state=altitude_offset_state,
+                )
+                data = json.dumps(
+                    {
+                        "ok": True,
+                        "written": written,
+                        "runtime": {
+                            "mode": mode_state.get(),
+                            "gps_format": gps_format_state.get(),
+                            "offset_m": float(altitude_offset_state.get()),
+                        },
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+            elif self.path.startswith("/service"):
+                action = str(payload.get("action", "")).strip().lower()
+                if action not in {"start", "stop"}:
+                    data = json.dumps(
+                        {
+                            "ok": False,
+                            "error": "action must be 'start' or 'stop'",
+                        }
+                    ).encode("utf-8")
+                    self.send_response(400)
+                elif action == "stop":
+                    def _stop_later():
+                        time.sleep(0.2)
+                        _run_service_command("stop", NAVISAR_SERVICE_NAME)
+
+                    threading.Thread(target=_stop_later, daemon=True).start()
+                    data = json.dumps(
+                        {
+                            "ok": True,
+                            "action": "stop",
+                            "service": NAVISAR_SERVICE_NAME,
+                        }
+                    ).encode("utf-8")
+                    self.send_response(200)
+                else:
+                    ok, msg = _run_service_command("start", NAVISAR_SERVICE_NAME)
+                    data = json.dumps(
+                        {
+                            "ok": ok,
+                            "action": "start",
+                            "service": NAVISAR_SERVICE_NAME,
+                            "message": msg,
+                        }
+                    ).encode("utf-8")
+                    self.send_response(200 if ok else 500)
+            else:
+                snap = state.snapshot()
+                current_alt = None
+                fused = snap.get("fused") if isinstance(snap, dict) else None
+                if isinstance(fused, dict):
+                    current_alt = _safe_float(fused.get("z"))
+                if current_alt is None:
+                    sensors = snap.get("sensors") if isinstance(snap, dict) else None
+                    if isinstance(sensors, dict):
+                        baro = sensors.get("barometer")
+                        if isinstance(baro, dict):
+                            current_alt = _safe_float(baro.get("height_m"))
+                        oflow = sensors.get("optical_flow")
+                        if current_alt is None and isinstance(oflow, dict):
+                            dist_mm = _safe_float(oflow.get("distance_mm"))
+                            if dist_mm is not None:
+                                current_alt = dist_mm / 1000.0
+                if current_alt is None:
+                    data = json.dumps(
+                        {"ok": False, "error": "altitude not available"}
+                    ).encode("utf-8")
+                    self.send_response(409)
+                else:
+                    previous_offset = float(altitude_offset_state.get())
+                    new_offset = previous_offset - current_alt
+                    altitude_offset_state.set(new_offset)
+                    data = json.dumps(
+                        {
+                            "ok": True,
+                            "measured_altitude_m": current_alt,
+                            "previous_offset_m": previous_offset,
+                            "offset_m": new_offset,
+                        }
+                    ).encode("utf-8")
+                    self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
@@ -428,29 +821,44 @@ def start_dashboard_server(
     state,
     mode_state,
     gps_format_state,
+    altitude_offset_state,
     frame_state,
     root_dir,
     host,
     port,
     allowed_modes,
     allowed_gps_formats,
+    pixhawk_config_path,
     open_browser=True,
 ):
     handler = _make_dashboard_handler(
         state,
         mode_state,
         gps_format_state,
+        altitude_offset_state,
         frame_state,
         root_dir,
         allowed_modes,
         allowed_gps_formats,
+        pixhawk_config_path,
     )
     server = http.server.ThreadingHTTPServer((host, port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    url = f"http://{host}:{port}/"
+    bind_all = host in {"0.0.0.0", "::", ""}
+    local_url = f"http://127.0.0.1:{port}/"
+    if bind_all:
+        access_urls = [f"http://{ip}:{port}/" for ip in _discover_local_ipv4_addresses()]
+        if not access_urls:
+            access_urls = [local_url]
+    else:
+        access_urls = [f"http://{host}:{port}/"]
+    print("Dashboard URLs:")
+    for url in access_urls:
+        print(f"  {url}")
+    server.navisar_urls = access_urls
     if open_browser:
-        webbrowser.open(url)
+        webbrowser.open(local_url if bind_all else access_urls[0])
     return server
 
 
@@ -770,6 +1178,8 @@ def main():
     dashboard_state = None
     dashboard_server = None
     pixhawk_cfg = configs["pixhawk"]
+    altitude_offset_m = float(pixhawk_cfg.get("altitude_offset_m", 0.0))
+    altitude_offset_state = ModeState(altitude_offset_m)
     use_imu_fusion = pixhawk_cfg.get("use_imu_fusion", True)
     use_sensor_fusion = pixhawk_cfg.get("use_sensor_fusion", True)
     # Output mode controls how odometry and GPS data are consumed/emitted.
@@ -792,9 +1202,9 @@ def main():
         "optical_flow_then_vo",
     }
     hybrid_optical_vo_mode = output_mode == "optical_flow_then_vo"
-    use_vo_pipeline = output_mode not in optical_modes
-    if not use_vo_pipeline:
-        allowed_modes = set(optical_modes)
+    # Keep VO pipeline available so runtime dashboard mode switching can move
+    # between optical-flow and VO-backed modes without restart.
+    use_vo_pipeline = True
     vio_mode = str(pixhawk_cfg.get("vio_mode", VIO_MODE)).strip().lower()
     if vio_mode not in {"vo", "vio_imu"}:
         print(f"Unknown vio_mode '{vio_mode}', defaulting to '{VIO_MODE}'.")
@@ -834,11 +1244,24 @@ def main():
     optical_port = optical_cfg.get("port", OPTICAL_FLOW_PORT)
     optical_baud = int(optical_cfg.get("baud", OPTICAL_FLOW_BAUD))
     optical_rate_hz = float(optical_cfg.get("rate_hz", OPTICAL_FLOW_RATE_HZ))
+    optical_altitude_scale = float(optical_cfg.get("altitude_scale", 1.0))
+    if optical_altitude_scale <= 0.0:
+        print("Warning: optical_flow.altitude_scale must be > 0; using 1.0.")
+        optical_altitude_scale = 1.0
+    optical_data_mode = str(optical_cfg.get("data_mode", "stable")).strip().lower()
+    if optical_data_mode not in {"stable", "raw_tool"}:
+        print(
+            "Warning: optical_flow.data_mode must be 'stable' or 'raw_tool'; using 'stable'."
+        )
+        optical_data_mode = "stable"
+    optical_raw_mode = optical_data_mode == "raw_tool"
     optical_heartbeat_s = float(
         optical_cfg.get("heartbeat_interval_s", OPTICAL_FLOW_HEARTBEAT_S)
     )
     optical_print = bool(optical_cfg.get("print", OPTICAL_FLOW_PRINT))
     optical_max_flow_raw = optical_cfg.get("max_flow_raw")
+    if optical_raw_mode:
+        optical_max_flow_raw = None
     if optical_max_flow_raw is not None:
         try:
             optical_max_flow_raw = float(optical_max_flow_raw)
@@ -1067,14 +1490,7 @@ def main():
             raw_print=gps_output_raw_print,
         )
     gps_format_order = ("ubx", "nmea", "ubx_nmea")
-    if nmea_emitter is not None and ubx_emitter is not None:
-        allowed_gps_formats = list(gps_format_order)
-    elif ubx_emitter is not None:
-        allowed_gps_formats = ["ubx"]
-    elif nmea_emitter is not None:
-        allowed_gps_formats = ["nmea"]
-    else:
-        allowed_gps_formats = []
+    allowed_gps_formats = list(gps_format_order) if gps_output_enabled else []
     initial_gps_format = gps_output_format
     if initial_gps_format not in allowed_gps_formats:
         if "ubx_nmea" in allowed_gps_formats:
@@ -1094,18 +1510,24 @@ def main():
                 dashboard_state,
                 mode_state,
                 gps_format_state,
+                altitude_offset_state,
                 frame_state,
                 dashboard_root,
                 DASHBOARD_HOST,
                 DASHBOARD_PORT,
                 allowed_modes,
                 allowed_gps_formats,
+                _repo_root() / "config" / "pixhawk.yaml",
                 open_browser=_can_auto_open_browser(),
             )
+            server_urls = getattr(dashboard_server, "navisar_urls", None) or [
+                f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}/"
+            ]
             dashboard_state.update(
                 {
                     "status": "running",
-                    "url": f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}/",
+                    "url": server_urls[0],
+                    "urls": server_urls,
                 }
             )
         except Exception as exc:
@@ -1193,6 +1615,14 @@ def main():
             print(f"Warning: GPS input not available ({exc})")
     elif cfg_lat is not None and cfg_lon is not None:
         selector.set_gps_origin(float(cfg_lat), float(cfg_lon), float(cfg_alt) if cfg_alt else None)
+
+    if mavlink_interface is not None:
+        threading.Thread(
+            target=_run_go_initial_to_final,
+            args=(mavlink_interface, pixhawk_cfg),
+            daemon=True,
+        ).start()
+
     if gps_serial_enabled:
         try:
             gps_serial_reader = GpsSerialReader(
@@ -1353,9 +1783,52 @@ def main():
         print_enabled=gps_output_print,
     )
 
+    def _ensure_nmea_emitter():
+        nonlocal nmea_emitter
+        if nmea_emitter is not None or not gps_output_enabled:
+            return
+        try:
+            nmea_emitter = NmeaSerialEmitter(
+                port=gps_output_port,
+                baud=gps_output_baud,
+                rate_hz=gps_output_rate_hz,
+                fix_quality=gps_output_fix_quality,
+                min_sats=gps_output_min_sats,
+                max_sats=gps_output_max_sats,
+                update_s=gps_output_update_s,
+                raw_print=gps_output_raw_print,
+            )
+        except Exception as exc:
+            print(f"Warning: unable to initialize NMEA emitter ({exc})")
+
+    def _ensure_ubx_emitter():
+        nonlocal ubx_emitter
+        if ubx_emitter is not None or not gps_output_enabled:
+            return
+        try:
+            ubx_emitter = UbxSerialEmitter(
+                port=gps_output_port,
+                baud=gps_output_baud,
+                rate_hz=gps_output_rate_hz,
+                fix_type=vps_gps_fix_type,
+                min_sats=gps_output_min_sats,
+                max_sats=gps_output_max_sats,
+                update_s=gps_output_update_s,
+                raw_print=gps_output_raw_print,
+            )
+        except Exception as exc:
+            print(f"Warning: unable to initialize UBX emitter ({exc})")
+
     def apply_gps_format_selection():
         requested = _normalize_gps_format(gps_format_state.get())
-        if requested not in allowed_gps_formats:
+        if requested == "nmea":
+            _ensure_nmea_emitter()
+        elif requested == "ubx":
+            _ensure_ubx_emitter()
+        elif requested == "ubx_nmea":
+            _ensure_nmea_emitter()
+            _ensure_ubx_emitter()
+        if requested not in {"ubx", "nmea", "ubx_nmea"}:
             requested = initial_gps_format
             gps_format_state.set(requested)
         active_nmea = None
@@ -1432,18 +1905,57 @@ def main():
             heading_state["source"] = source
         return heading_state.get("deg"), heading_state.get("source", "none")
     optical_flow_mav_cfg = pixhawk_cfg.get("optical_flow_mavlink", {})
+    flow_min_quality = int(optical_flow_mav_cfg.get("min_quality", 30))
+    flow_max_speed_mps = float(optical_flow_mav_cfg.get("max_speed_mps", 2.0))
+    flow_deadband_mps = float(optical_flow_mav_cfg.get("deadband_mps", 0.05))
+    flow_smoothing_alpha = float(optical_flow_mav_cfg.get("smoothing_alpha", 0.2))
+    flow_stationary_speed_mps = float(
+        optical_flow_mav_cfg.get("stationary_speed_mps", 0.02)
+    )
+    flow_stationary_samples = int(optical_flow_mav_cfg.get("stationary_samples", 15))
+    flow_stationary_quality_min = int(
+        optical_flow_mav_cfg.get("stationary_quality_min", 40)
+    )
+    flow_speed_scale = float(optical_flow_mav_cfg.get("speed_scale", 1.0))
+    alt_smoothing_alpha = float(optical_cfg.get("altitude_smoothing_alpha", 0.18))
+    alt_jump_limit_m = float(optical_cfg.get("altitude_jump_limit_m", 0.06))
+    alt_deadband_m = float(optical_cfg.get("altitude_deadband_m", 0.004))
+    alt_min_m = float(optical_cfg.get("altitude_min_m", 0.05))
+    alt_max_m = float(optical_cfg.get("altitude_max_m", 8.0))
+
+    if optical_raw_mode:
+        flow_min_quality = 0
+        flow_max_speed_mps = 1000.0
+        flow_deadband_mps = 0.0
+        flow_smoothing_alpha = 1.0
+        flow_stationary_speed_mps = 0.0
+        flow_stationary_samples = 10**9
+        flow_stationary_quality_min = 255
+        flow_speed_scale = 1.0
+        alt_smoothing_alpha = 1.0
+        alt_jump_limit_m = 1000.0
+        alt_deadband_m = 0.0
+        alt_min_m = -1000.0
+        alt_max_m = 1000.0
+        print(
+            "Optical flow data mode: raw_tool (raw-like output and no smoothing/clamping)"
+        )
+
     optical_flow_gps_port_mode = OpticalFlowGpsPortMode(
         gps_port_mode=gps_port_mode,
-        min_quality=int(optical_flow_mav_cfg.get("min_quality", 30)),
-        max_speed_mps=float(optical_flow_mav_cfg.get("max_speed_mps", 2.0)),
-        deadband_mps=float(optical_flow_mav_cfg.get("deadband_mps", 0.05)),
-        smoothing_alpha=float(optical_flow_mav_cfg.get("smoothing_alpha", 0.2)),
-        stationary_speed_mps=float(optical_flow_mav_cfg.get("stationary_speed_mps", 0.02)),
-        stationary_samples=int(optical_flow_mav_cfg.get("stationary_samples", 15)),
-        stationary_quality_min=int(
-            optical_flow_mav_cfg.get("stationary_quality_min", 40)
-        ),
-        speed_scale=float(optical_flow_mav_cfg.get("speed_scale", 1.0)),
+        min_quality=flow_min_quality,
+        max_speed_mps=flow_max_speed_mps,
+        deadband_mps=flow_deadband_mps,
+        smoothing_alpha=flow_smoothing_alpha,
+        stationary_speed_mps=flow_stationary_speed_mps,
+        stationary_samples=flow_stationary_samples,
+        stationary_quality_min=flow_stationary_quality_min,
+        speed_scale=flow_speed_scale,
+        altitude_smoothing_alpha=alt_smoothing_alpha,
+        altitude_jump_limit_m=alt_jump_limit_m,
+        altitude_deadband_m=alt_deadband_m,
+        altitude_min_m=alt_min_m,
+        altitude_max_m=alt_max_m,
     )
     odometry_mode = OdometryMode(
         send_interval_s=odom_send_interval_s,
@@ -1680,8 +2192,9 @@ def main():
             y_f = y_m
             z_f = z_m
         barometer_driver = vo.height_estimator.barometer_driver
+        current_altitude_offset_m = float(altitude_offset_state.get())
         if barometer_driver is not None and barometer_driver.current_m is not None:
-            z_f = barometer_driver.current_m
+            z_f = barometer_driver.current_m + current_altitude_offset_m
         z_for_output = z_f
 
         selector.update_odometry(x_f, y_f, z_f, timestamp=now)
@@ -1725,6 +2238,8 @@ def main():
             height_source = barometer_driver.current_m
             if height_source is None:
                 height_source = barometer_driver.get_height_m()
+            if height_source is not None:
+                height_source = float(height_source) + current_altitude_offset_m
             alt_override_m = height_source
             last_time = last_baro["time"]
             last_height = last_baro["height_m"]
@@ -1846,6 +2361,7 @@ def main():
                     "timestamp": _safe_float(now),
                     "mode": active_output_mode,
                     "gps_output_format": gps_format_active,
+                    "altitude_offset_m": current_altitude_offset_m,
                     "heading": {
                         "deg": _safe_float(runtime_heading_deg),
                         "source": runtime_heading_source,
@@ -2021,6 +2537,7 @@ def main():
         try:
             while True:
                 now = time.time()
+                current_altitude_offset_m = float(altitude_offset_state.get())
                 if barometer_driver is not None:
                     barometer_driver.update()
                 if optical_reader is not None:
@@ -2097,7 +2614,10 @@ def main():
                 alt_override_m = None
                 sample = last_optical_flow["value"]
                 if sample is not None and sample.dist_ok:
-                    alt_override_m = float(sample.distance_mm) / 1000.0
+                    alt_override_m = (
+                        (float(sample.distance_mm) / 1000.0 + current_altitude_offset_m)
+                        * optical_altitude_scale
+                    )
 
                 if current_mode == "optical_flow_mavlink":
                     optical_flow_mode.handle(
@@ -2124,6 +2644,7 @@ def main():
                             "timestamp": _safe_float(now),
                             "mode": current_mode if current_mode in optical_modes else output_mode,
                             "gps_output_format": gps_format_active,
+                            "altitude_offset_m": current_altitude_offset_m,
                             "heading": {
                                 "deg": _safe_float(runtime_heading_deg),
                                 "source": runtime_heading_source,
