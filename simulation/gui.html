@@ -131,6 +131,38 @@
         cursor: not-allowed;
       }
 
+      .gps-origin-controls {
+        display: grid;
+        gap: 8px;
+      }
+
+      .gps-origin-fields {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .gps-origin-fields input {
+        width: 100%;
+        background: #000;
+        color: var(--text);
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        padding: 7px 9px;
+        font-size: 12px;
+      }
+
+      .gps-origin-note {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      @media (max-width: 980px) {
+        .gps-origin-fields {
+          grid-template-columns: 1fr;
+        }
+      }
+
       .main {
         display: grid;
         grid-template-columns: 1fr;
@@ -513,7 +545,22 @@
       <div class="mode-buttons" id="rw-buttons">
         <button data-action="read">Read</button>
         <button data-action="write">Write</button>
-        <button data-action="zero-alt">Auto Zero Altitude</button>
+      </div>
+      <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">GPS Mode</div>
+      <div class="gps-origin-controls">
+        <div class="mode-buttons" id="gps-origin-buttons">
+          <button id="gps-auto-btn" data-mode="auto">AUTO</button>
+          <button id="gps-variable-btn" data-mode="variable">MANUAL INPUT</button>
+        </div>
+        <div class="gps-origin-fields" id="gps-origin-fields">
+          <input id="gps-lat-input" type="text" inputmode="decimal" placeholder="Latitude (e.g. 12.9715987)" />
+          <input id="gps-lon-input" type="text" inputmode="decimal" placeholder="Longitude (e.g. 77.594566)" />
+          <input id="gps-alt-input" type="text" inputmode="decimal" placeholder="Altitude m (optional)" />
+        </div>
+        <div class="gps-origin-note" id="gps-origin-note">
+          AUTO mode: main Write waits up to 10s for healthy GPS, then falls back to variable fields.
+        </div>
+        <div class="gps-origin-note" id="gps-mode-status">Mode status: AUTO selected</div>
       </div>
 
       <div class="main">
@@ -1358,6 +1405,172 @@
       const modeButtons = Array.from(document.querySelectorAll("#mode-buttons button"));
       const gpsFormatButtons = Array.from(document.querySelectorAll("#gps-format-buttons button"));
       const rwButtons = Array.from(document.querySelectorAll("#rw-buttons button"));
+      const gpsAutoBtn = document.getElementById("gps-auto-btn");
+      const gpsVariableBtn = document.getElementById("gps-variable-btn");
+      const gpsOriginFields = document.getElementById("gps-origin-fields");
+      const gpsOriginNote = document.getElementById("gps-origin-note");
+      const gpsModeStatus = document.getElementById("gps-mode-status");
+      const gpsLatInput = document.getElementById("gps-lat-input");
+      const gpsLonInput = document.getElementById("gps-lon-input");
+      const gpsAltInput = document.getElementById("gps-alt-input");
+      const gpsOriginMode = { value: "auto" };
+
+      const setGpsModeStatus = (text) => {
+        if (gpsModeStatus) gpsModeStatus.textContent = `Mode status: ${text}`;
+      };
+
+      const appendLog = (text) => {
+        const logEl = document.getElementById("output-log");
+        if (!logEl) return;
+        const nowStr = new Date().toLocaleTimeString();
+        logState.lines.push(`[${nowStr}] ${text}`);
+        if (logState.lines.length > logState.max) {
+          logState.lines.splice(0, logState.lines.length - logState.max);
+        }
+        logEl.textContent = logState.lines.join("\n");
+      };
+
+      const updateGpsOriginUi = () => {
+        const isAuto = gpsOriginMode.value === "auto";
+        const isVariable = gpsOriginMode.value === "variable";
+        if (gpsAutoBtn) gpsAutoBtn.classList.toggle("active", isAuto);
+        if (gpsVariableBtn) gpsVariableBtn.classList.toggle("active", isVariable);
+        if (gpsOriginFields) gpsOriginFields.style.display = "grid";
+        if (gpsOriginNote) {
+          gpsOriginNote.textContent = isVariable
+            ? "VARIABLE mode: main Write uses only variable fields."
+            : "AUTO mode: main Write waits up to 10s for healthy GPS, then falls back to variable fields.";
+        }
+        setGpsModeStatus(isVariable ? "VARIABLE selected" : "AUTO selected");
+      };
+
+      const handleSelectAuto = () => {
+        gpsOriginMode.value = "auto";
+        updateGpsOriginUi();
+        setGpsModeStatus("AUTO selected");
+      };
+
+      const handleSelectVariable = () => {
+        gpsOriginMode.value = "variable";
+        updateGpsOriginUi();
+        if (gpsLatInput) gpsLatInput.focus();
+        setGpsModeStatus("VARIABLE selected");
+      };
+
+      const refreshGpsOriginState = async () => {
+        try {
+          const res = await fetch("/gps-origin", { cache: "no-store" });
+          const payload = await res.json();
+          const origin = payload?.origin || {};
+          const liveFix = payload?.gps_input || {};
+          const latForUi = Number.isFinite(Number(origin.lat)) ? Number(origin.lat) : Number(liveFix.lat);
+          const lonForUi = Number.isFinite(Number(origin.lon)) ? Number(origin.lon) : Number(liveFix.lon);
+          const altForUi = Number.isFinite(Number(origin.alt_m)) ? Number(origin.alt_m) : Number(liveFix.alt_m);
+          if (gpsLatInput && (gpsLatInput.value === "" || gpsOriginMode.value !== "variable")) {
+            if (Number.isFinite(latForUi)) gpsLatInput.value = latForUi.toFixed(7);
+          }
+          if (gpsLonInput && (gpsLonInput.value === "" || gpsOriginMode.value !== "variable")) {
+            if (Number.isFinite(lonForUi)) gpsLonInput.value = lonForUi.toFixed(7);
+          }
+          if (gpsAltInput && gpsAltInput.value === "") {
+            if (Number.isFinite(altForUi)) gpsAltInput.value = altForUi.toFixed(2);
+          }
+        } catch (_) {
+          // ignore
+        }
+      };
+
+      const isHealthyGpsFix = (fix) => {
+        const lat = Number(fix?.lat);
+        const lon = Number(fix?.lon);
+        const fixType = Number(fix?.fix_type);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+        if (Number.isFinite(fixType) && fixType < 3) return false;
+        return true;
+      };
+
+      const writeVariableOriginFromFields = async () => {
+        const latRaw = gpsLatInput ? gpsLatInput.value.trim() : "";
+        const lonRaw = gpsLonInput ? gpsLonInput.value.trim() : "";
+        const altRaw = gpsAltInput ? gpsAltInput.value.trim() : "";
+        const lat = Number(latRaw);
+        const lon = Number(lonRaw);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          setGpsModeStatus("VARIABLE failed: invalid lat/lon");
+          appendLog("main write gps failed: variable lat/lon invalid");
+          return false;
+        }
+        const writePayload = await writeOriginByPayload({
+          mode: "variable",
+          lat: latRaw,
+          lon: lonRaw,
+          alt_m: altRaw,
+        });
+        if (writePayload?.ok) {
+          setGpsModeStatus("Variable data used");
+          appendLog(
+            `main write gps source=variable lat=${lat.toFixed(7)} lon=${lon.toFixed(7)}`
+          );
+          await refreshGpsOriginState();
+          return true;
+        }
+        setGpsModeStatus("VARIABLE failed: write failed");
+        appendLog(`main write gps failed: ${writePayload?.error || "unknown error"}`);
+        return false;
+      };
+
+      const fetchGpsOriginPayload = async () => {
+        const res = await fetch("/gps-origin", { cache: "no-store" });
+        return res.json();
+      };
+
+      const writeOriginByPayload = async (body) => {
+        const res = await fetch("/gps-origin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        return res.json();
+      };
+
+      const writeGpsOriginFromMainWrite = async () => {
+        if (gpsOriginMode.value === "variable") {
+          return writeVariableOriginFromFields();
+        }
+        setGpsModeStatus("AUTO working: waiting up to 10s for healthy GPS");
+        const deadline = Date.now() + 10000;
+        while (Date.now() < deadline) {
+          try {
+            const payload = await fetchGpsOriginPayload();
+            const fix = payload?.gps_input || {};
+            if (isHealthyGpsFix(fix)) {
+              const lat = Number(fix.lat);
+              const lon = Number(fix.lon);
+              const altVal = Number(fix.alt_m);
+              const writePayload = await writeOriginByPayload({
+                mode: "initial_home",
+                lat,
+                lon,
+                alt_m: Number.isFinite(altVal) ? altVal : "",
+              });
+              if (writePayload?.ok) {
+                setGpsModeStatus("AUTO used sensor GPS");
+                appendLog(
+                  `main write gps source=sensor lat=${lat.toFixed(7)} lon=${lon.toFixed(7)}`
+                );
+                await refreshGpsOriginState();
+                return true;
+              }
+            }
+          } catch (_) {
+            // keep trying until timeout
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        setGpsModeStatus("AUTO fallback: using variable data");
+        return writeVariableOriginFromFields();
+      };
+
       const setMode = async (mode) => {
         try {
           await fetch("/mode", {
@@ -1422,6 +1635,10 @@
       const handleWrite = () => {
         (async () => {
           try {
+            const originOk = await writeGpsOriginFromMainWrite();
+            if (!originOk) {
+              return;
+            }
             const res = await fetch("/persist", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -1511,11 +1728,19 @@
             handleRead();
           } else if (btn.dataset.action === "write") {
             handleWrite();
-          } else if (btn.dataset.action === "zero-alt") {
-            handleAutoZeroAltitude();
           }
         });
       });
+      if (gpsAutoBtn) {
+        gpsAutoBtn.addEventListener("click", () => {
+          handleSelectAuto();
+        });
+      }
+      if (gpsVariableBtn) {
+        gpsVariableBtn.addEventListener("click", () => {
+          handleSelectVariable();
+        });
+      }
 
       const updateModeButtons = (mode, allowed = null) => {
         modeButtons.forEach((btn) => {
@@ -1556,6 +1781,8 @@
       tick();
       refreshModeState();
       refreshGpsFormatState();
+      updateGpsOriginUi();
+      refreshGpsOriginState();
       if (voStream) {
         streamState.useSim = true;
         setCameraMode(true);
@@ -1586,6 +1813,7 @@
       }, 250);
       setInterval(refreshModeState, 2000);
       setInterval(refreshGpsFormatState, 2000);
+      setInterval(refreshGpsOriginState, 2000);
       window.addEventListener("resize", () => {
         fitCamCanvas();
         drawVelPlot();

@@ -79,7 +79,7 @@ compass:
   heading_jump_reject_deg: 20.0
 gps_output:
   enabled: true
-  format: nmea
+  format: ubx
   port: /dev/ttyAMA0
   baud: 230400
   rate_hz: 10
@@ -114,6 +114,6 @@ gnss_monitor:
     gcs_severity: warning
     min_interval_s: 2.0
 gps_origin:
-  lat: 12
-  lon: 77
-  alt: 5
+  lat: 11.0
+  lon: 56.0
+  alt: 0.0

@@ -256,6 +256,28 @@ def _persist_pixhawk_runtime_settings(
     }
 
 
+def _persist_gps_origin(pixhawk_config_path, lat, lon, alt_m):
+    """Persist GPS origin into config/pixhawk.yaml."""
+    path = Path(pixhawk_config_path)
+    with _CONFIG_WRITE_LOCK:
+        cfg = _load_yaml(path)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg["gps_origin"] = {
+            "lat": float(lat),
+            "lon": float(lon),
+            "alt": float(alt_m) if alt_m is not None else None,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(cfg, handle, sort_keys=False)
+    return {
+        "lat": float(lat),
+        "lon": float(lon),
+        "alt_m": float(alt_m) if alt_m is not None else None,
+    }
+
+
 def _run_service_command(action, service_name):
     """Run a systemd command for the NAVISAR service."""
     cmd = ["systemctl", action, service_name]
@@ -394,6 +416,8 @@ def _make_dashboard_handler(
     mode_state,
     gps_format_state,
     altitude_offset_state,
+    get_gps_origin,
+    set_gps_origin,
     frame_state,
     root_dir,
     allowed_modes,
@@ -446,6 +470,35 @@ def _make_dashboard_handler(
             if self.path.startswith("/altitude-offset"):
                 payload = {
                     "offset_m": float(altitude_offset_state.get()),
+                }
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if self.path.startswith("/gps-origin"):
+                current_origin = get_gps_origin()
+                snap = state.snapshot()
+                gps_input = (
+                    snap.get("sensors", {}).get("gps_input", {})
+                    if isinstance(snap, dict)
+                    else {}
+                )
+                payload = {
+                    "origin": {
+                        "lat": _safe_float(current_origin[0]) if current_origin else None,
+                        "lon": _safe_float(current_origin[1]) if current_origin else None,
+                        "alt_m": _safe_float(current_origin[2]) if current_origin else None,
+                    },
+                    "gps_input": {
+                        "lat": _safe_float(gps_input.get("lat")),
+                        "lon": _safe_float(gps_input.get("lon")),
+                        "alt_m": _safe_float(gps_input.get("alt_m")),
+                        "fix_type": _safe_float(gps_input.get("fix_type")),
+                    },
                 }
                 data = json.dumps(payload).encode("utf-8")
                 self.send_response(200)
@@ -533,6 +586,7 @@ def _make_dashboard_handler(
                 and not self.path.startswith("/gps-format")
                 and not self.path.startswith("/altitude-zero")
                 and not self.path.startswith("/altitude-offset")
+                and not self.path.startswith("/gps-origin")
                 and not self.path.startswith("/persist")
                 and not self.path.startswith("/service")
             ):
@@ -606,6 +660,86 @@ def _make_dashboard_handler(
                     altitude_offset_state.set(offset_m)
                     data = json.dumps({"ok": True, "offset_m": offset_m}).encode("utf-8")
                     self.send_response(200)
+            elif self.path.startswith("/gps-origin"):
+                mode = str(payload.get("mode", "variable")).strip().lower()
+                source = "variable"
+                lat = lon = alt_m = None
+                if mode in {"initial_home", "initial-home", "home"}:
+                    # Allow caller-provided fix to avoid race with live dashboard snapshots.
+                    lat = _safe_float(payload.get("lat"))
+                    lon = _safe_float(payload.get("lon"))
+                    alt_m = _safe_float(payload.get("alt_m"))
+                    if lat is None or lon is None:
+                        snap = state.snapshot()
+                        gps_input = (
+                            snap.get("sensors", {}).get("gps_input", {})
+                            if isinstance(snap, dict)
+                            else {}
+                        )
+                        lat = _safe_float(gps_input.get("lat"))
+                        lon = _safe_float(gps_input.get("lon"))
+                        alt_m = _safe_float(gps_input.get("alt_m"))
+                    source = "initial_home"
+                    if lat is None or lon is None:
+                        data = json.dumps(
+                            {
+                                "ok": False,
+                                "error": "no live GPS fix available for initial_home",
+                            }
+                        ).encode("utf-8")
+                        self.send_response(409)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+                else:
+                    try:
+                        lat = float(payload.get("lat"))
+                        lon = float(payload.get("lon"))
+                    except (TypeError, ValueError):
+                        data = json.dumps(
+                            {
+                                "ok": False,
+                                "error": "lat/lon must be numeric for variable mode",
+                            }
+                        ).encode("utf-8")
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+                    try:
+                        alt_raw = payload.get("alt_m")
+                        alt_m = None if alt_raw in (None, "") else float(alt_raw)
+                    except (TypeError, ValueError):
+                        data = json.dumps(
+                            {
+                                "ok": False,
+                                "error": "alt_m must be numeric when provided",
+                            }
+                        ).encode("utf-8")
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+
+                set_gps_origin(lat, lon, alt_m)
+                written = _persist_gps_origin(pixhawk_config_path, lat, lon, alt_m)
+                data = json.dumps(
+                    {
+                        "ok": True,
+                        "source": source,
+                        "origin": written,
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
             elif self.path.startswith("/persist"):
                 requested_mode = str(payload.get("mode", "")).strip().lower()
                 if requested_mode:
@@ -771,6 +905,8 @@ def start_dashboard_server(
     mode_state,
     gps_format_state,
     altitude_offset_state,
+    get_gps_origin,
+    set_gps_origin,
     frame_state,
     root_dir,
     host,
@@ -785,6 +921,8 @@ def start_dashboard_server(
         mode_state,
         gps_format_state,
         altitude_offset_state,
+        get_gps_origin,
+        set_gps_origin,
         frame_state,
         root_dir,
         allowed_modes,
@@ -1460,6 +1598,8 @@ def main():
                 mode_state,
                 gps_format_state,
                 altitude_offset_state,
+                selector.gps_origin,
+                selector.set_gps_origin,
                 frame_state,
                 dashboard_root,
                 DASHBOARD_HOST,
