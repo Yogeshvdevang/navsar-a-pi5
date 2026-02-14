@@ -105,3 +105,13 @@ After either method, reboot once so boot overlay/UART changes are applied:
 ```bash
 sudo reboot
 ```
+
+## 5) Service Control Commands
+
+Use these commands to manage `navisar.service`:
+
+```bash
+sudo systemctl stop navisar.service  # for STOP the service
+sudo systemctl start navisar.service  # for START the service
+sudo systemctl is-active navisar.service  # for checking its STATUS
+```
