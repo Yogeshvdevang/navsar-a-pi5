@@ -665,7 +665,7 @@
             </div>
           </div>
           <div class="card">
-            <h3>Height</h3>
+            <h3>Barometer vs Optical Flow (m)</h3>
             <div class="plot-wrap">
               <canvas id="height-plot"></canvas>
             </div>
@@ -796,6 +796,8 @@
         x: [],
         y: [],
         height: [],
+        barometerHeight: [],
+        opticalHeight: [],
         corrVx: [],
         corrVy: [],
       };
@@ -1120,19 +1122,46 @@
       const drawHeightPlot = () => {
         const rect = resizeCanvas(heightPlot, heightCtx);
         if (!rect) return;
-        const height = smoothSeries(plotState.height, 11);
-        const minVal = Math.min(...height, 0);
-        const maxVal = Math.max(...height, 1);
-        drawAxes(heightCtx, rect, 28);
-        drawLineSeries(heightCtx, rect, height, "#f59e0b", minVal, maxVal);
-        heightCtx.fillStyle = "#111";
+        const baro = plotState.barometerHeight[plotState.barometerHeight.length - 1] ?? 0;
+        const optical = plotState.opticalHeight[plotState.opticalHeight.length - 1] ?? 0;
+        const maxVal = 10;
+        const padX = 26;
+        const padTop = 20;
+        const padBottom = 30;
+        const plotW = rect.width - padX * 2;
+        const plotH = rect.height - padTop - padBottom;
+        const bars = [
+          { label: "Barometer", value: Number.isFinite(baro) ? baro : 0, color: "#16a34a" },
+          { label: "Optical", value: Number.isFinite(optical) ? optical : 0, color: "#2563eb" },
+        ];
+
+        heightCtx.strokeStyle = "rgba(0,0,0,0.12)";
+        heightCtx.lineWidth = 1;
+        heightCtx.strokeRect(padX, padTop, plotW, plotH);
+
+        const slotW = plotW / bars.length;
+        const barW = Math.min(52, slotW * 0.5);
         heightCtx.font = "11px sans-serif";
-        heightCtx.fillText("Height", rect.width - 70, 20);
-        heightCtx.fillStyle = "#f59e0b";
-        heightCtx.fillRect(rect.width - 90, 12, 14, 4);
-        const hLast = height[height.length - 1] ?? 0;
-        drawStatLabel(heightCtx, 8, 14, `h ${hLast.toFixed(3)} m`, "#b45309");
-        drawStatLabel(heightCtx, 8, rect.height - 12, `min ${minVal.toFixed(3)} max ${maxVal.toFixed(3)}`, "#333");
+        heightCtx.textAlign = "center";
+        bars.forEach((entry, i) => {
+          const clampedValue = Math.max(0, Math.min(maxVal, entry.value));
+          let h = (clampedValue / maxVal) * plotH;
+          if (clampedValue > 0) {
+            h = Math.max(4, h);
+          }
+          const x = padX + slotW * i + (slotW - barW) / 2;
+          const y = padTop + (plotH - h);
+          heightCtx.fillStyle = entry.color;
+          heightCtx.fillRect(x, y, barW, h);
+
+          heightCtx.fillStyle = "#111";
+          const suffix = entry.value > maxVal ? "+" : "";
+          heightCtx.fillText(`${entry.value.toFixed(3)}m${suffix}`, x + barW / 2, Math.max(padTop + 12, y - 6));
+          heightCtx.fillText(entry.label, x + barW / 2, rect.height - 10);
+        });
+        heightCtx.textAlign = "left";
+
+        drawStatLabel(heightCtx, 8, 14, "scale 0..10.000 m", "#333");
       };
 
       // Removed 3D trajectory + motion drawing for this layout.
@@ -1159,7 +1188,7 @@
           const optRaw = data.sensors?.optical_flow || {};
           const optOut = data.outputs?.optical_flow_mavlink || {};
           const opt = (() => {
-            if (optRaw && (optRaw.dist_cm != null || optRaw.distance_mm != null)) {
+            if (optRaw && (optRaw.dist_cm != null || optRaw.distance_mm != null || optRaw.dist_mm != null)) {
               return optRaw;
             }
             if (optOut && optOut.distance_m != null) {
@@ -1177,7 +1206,12 @@
             }
             return optRaw;
           })();
-          setText("of-dist", opt?.dist_cm ?? opt?.distance_mm ? (opt.distance_mm / 10) : null, 1);
+          const opticalDistCm = asFiniteNumber(
+            opt?.dist_cm,
+            opt?.distance_mm != null ? opt.distance_mm / 10 : null,
+            opt?.dist_mm != null ? opt.dist_mm / 10 : null
+          );
+          setText("of-dist", opticalDistCm, 1);
           setText("of-vx", opt?.flow_vx, 0);
           setText("of-vy", opt?.flow_vy, 0);
           setText("of-q", opt?.flow_q, 0);
@@ -1190,6 +1224,7 @@
             ? asFiniteNumber(opt?.speed_y, opt?.flow_vy, 0) || 0
             : asFiniteNumber(data.camera?.vy, 0) || 0;
           const opticalHeightM = asFiniteNumber(
+            opt?.dist_mm != null ? opt.dist_mm / 1000 : null,
             opt?.distance_mm != null ? opt.distance_mm / 1000 : null,
             opt?.dist_cm != null ? opt.dist_cm / 100 : null
           );
@@ -1201,6 +1236,19 @@
               data.camera?.z,
               data.gps?.local?.z
             ) ?? 0;
+          const originalBarometerHeight = asFiniteNumber(
+            data.sensors?.barometer?.height_m,
+            data.sensors?.barometer?.raw_alt_m
+          );
+          const lastOriginalBarometerHeight =
+            plotState.barometerHeight[plotState.barometerHeight.length - 1] ?? 0;
+          const originalBarometerHeightForPlot = Number.isFinite(originalBarometerHeight)
+            ? originalBarometerHeight
+            : lastOriginalBarometerHeight;
+          const lastOpticalHeight = plotState.opticalHeight[plotState.opticalHeight.length - 1] ?? 0;
+          const opticalHeightForPlot = Number.isFinite(opticalHeightM)
+            ? opticalHeightM
+            : lastOpticalHeight;
           if (!filterState.ready) {
             filterState.vx = rawVx;
             filterState.vy = rawVy;
@@ -1385,6 +1433,8 @@
           pushSeries(plotState.x, posX);
           pushSeries(plotState.y, posY);
           pushSeries(plotState.height, altitude);
+          pushSeries(plotState.barometerHeight, originalBarometerHeightForPlot);
+          pushSeries(plotState.opticalHeight, opticalHeightForPlot);
           pushSeries(plotState.corrVx, 0);
           pushSeries(plotState.corrVy, 0);
 

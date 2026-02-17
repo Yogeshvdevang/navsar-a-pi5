@@ -11,15 +11,24 @@ class BarometerHeightEstimator:
         self.fallback_m = float(fallback_m)
         self.current_m = None
         self.raw_press_hpa = None
+        self.raw_temp_c = None
         self.raw_alt_m = None
         self.last_valid_m = self.fallback_m
         self.last_msg_time = None
         self._base_alt_m = None
 
     @staticmethod
-    def _pressure_to_alt_m(press_hpa):
-        # Standard atmosphere approximation.
-        return 44330.0 * (1.0 - (press_hpa / 1013.25) ** 0.1903)
+    def _pressure_to_alt_m(press_hpa, temp_c):
+        # Matches the standalone barometer script logic.
+        if press_hpa is None:
+            return None
+        if press_hpa <= 0:
+            return None
+        if temp_c is None:
+            # Fallback when temperature is not available.
+            return 44330.0 * (1.0 - (press_hpa / 1013.25) ** 0.1903)
+        t_k = temp_c + 273.15
+        return (t_k / 0.0065) * (1.0 - (press_hpa / 1013.25) ** (1.0 / 5.255))
 
     def update(self):
         """Fetch the latest barometer message."""
@@ -30,10 +39,16 @@ class BarometerHeightEstimator:
             return
         self.last_msg_time = time.time()
         press_hpa = msg.get("press_hpa")
+        temp_c = msg.get("temp_c")
         alt_m = msg.get("alt_m")
         if press_hpa is not None:
             self.raw_press_hpa = press_hpa
-            alt_m = self._pressure_to_alt_m(press_hpa)
+        if temp_c is not None:
+            self.raw_temp_c = temp_c
+        if press_hpa is not None:
+            alt_from_pressure = self._pressure_to_alt_m(press_hpa, temp_c)
+            if alt_from_pressure is not None and math.isfinite(alt_from_pressure):
+                alt_m = alt_from_pressure
         if alt_m is None:
             return
         self.raw_alt_m = alt_m

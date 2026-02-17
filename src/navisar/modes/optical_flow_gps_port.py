@@ -17,9 +17,9 @@ class OpticalFlowGpsPortMode:
     def __init__(
         self,
         gps_port_mode: GpsPortMode,
-        min_quality: int = 30,
+        min_quality: int = 50,
         max_speed_mps: float = 2.0,
-        deadband_mps: float = 0.05,
+        deadband_mps: float = 0.01,
         smoothing_alpha: float = 0.2,
         stationary_speed_mps: float = 0.02,
         stationary_samples: int = 15,
@@ -32,6 +32,7 @@ class OpticalFlowGpsPortMode:
         altitude_max_m: float = 8.0,
         warn_interval_s: float = 2.0,
         max_gap_s: float = 1.0,
+        print_enabled: bool = True,
     ):
         self.gps_port_mode = gps_port_mode
         self.min_quality = int(min_quality)
@@ -49,6 +50,7 @@ class OpticalFlowGpsPortMode:
         self.altitude_max_m = float(altitude_max_m)
         self.warn_interval_s = float(warn_interval_s)
         self.max_gap_s = float(max_gap_s)
+        self.print_enabled = bool(print_enabled)
         self._last_warn = 0.0
         self._last_time_s = None
         self._last_time_ms = None
@@ -163,10 +165,12 @@ class OpticalFlowGpsPortMode:
         self._last_time_ms = sample.time_ms
 
         raw_alt_m = None
+        raw_dist_mm = None
         if alt_override_m is not None and _finite(alt_override_m):
             raw_alt_m = float(alt_override_m)
         elif sample.dist_ok:
             raw_alt_m = float(sample.distance_mm) / 1000.0
+            raw_dist_mm = int(sample.distance_mm)
 
         if raw_alt_m is not None and _finite(raw_alt_m):
             raw_alt_m = _clamp(raw_alt_m, self.altitude_min_m, self.altitude_max_m)
@@ -196,7 +200,55 @@ class OpticalFlowGpsPortMode:
             self._z_m,
             (origin[0], origin[1], None),
             alt_override_m=alt_m,
+            nav_pvt_alt_mm_override=raw_dist_mm,
             heading_deg=heading_deg,
             heading_only=heading_only,
         )
-        self.last_payload = self.gps_port_mode.last_payload
+        port_payload = self.gps_port_mode.last_payload
+        if port_payload is None:
+            self.last_payload = None
+            return
+
+        flow_payload = {
+            "time_ms": sample.time_ms,
+            "distance_mm": sample.distance_mm,
+            "flow_vx": sample.flow_vx,
+            "flow_vy": sample.flow_vy,
+            "flow_quality": int(sample.flow_quality),
+            "flow_ok": int(sample.flow_ok),
+            "dist_ok": int(sample.dist_ok),
+            "speed_x_mps_raw": float(sample.speed_x),
+            "speed_y_mps_raw": float(sample.speed_y),
+            "speed_x_mps_used": float(self._vx_f),
+            "speed_y_mps_used": float(self._vy_f),
+            "x_m": float(self._x_m),
+            "y_m": float(self._y_m),
+            "z_m": float(self._z_m),
+            "dt_s": float(dt_s),
+        }
+
+        payload = dict(port_payload)
+        payload["optical_flow"] = flow_payload
+        self.last_payload = payload
+
+        ubx_payload = payload.get("ubx") or {}
+        if self.print_enabled and ubx_payload.get("pvt_hex"):
+            print(
+                "OFLOW->UBX:\n"
+                f"time_ms={flow_payload['time_ms']} dt_s={flow_payload['dt_s']:.3f} "
+                f"dist_mm={flow_payload['distance_mm']} dist_ok={flow_payload['dist_ok']} "
+                f"flow_ok={flow_payload['flow_ok']} flow_q={flow_payload['flow_quality']}\n"
+                f"raw_vx={flow_payload['flow_vx']} raw_vy={flow_payload['flow_vy']} "
+                f"raw_speed_x={flow_payload['speed_x_mps_raw']:.3f} "
+                f"raw_speed_y={flow_payload['speed_y_mps_raw']:.3f}\n"
+                f"used_vx={flow_payload['speed_x_mps_used']:.3f} "
+                f"used_vy={flow_payload['speed_y_mps_used']:.3f} "
+                f"enu=({flow_payload['x_m']:.3f}, {flow_payload['y_m']:.3f}, {flow_payload['z_m']:.3f})"
+            )
+            print(f"UBX RAW NAV-PVT: {ubx_payload.get('pvt_hex')}")
+            print(f"UBX RAW NAV-POSLLH: {ubx_payload.get('posllh_hex')}")
+            print(f"UBX RAW NAV-VELNED: {ubx_payload.get('velned_hex')}")
+            print(f"UBX RAW NAV-SOL: {ubx_payload.get('sol_hex')}")
+            print(f"UBX RAW NAV-STATUS: {ubx_payload.get('status_hex')}")
+            print(f"UBX RAW NAV-DOP: {ubx_payload.get('dop_hex')}")
+            print("-" * 50)

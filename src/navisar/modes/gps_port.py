@@ -51,6 +51,7 @@ class GpsPortMode:
         z_m,
         origin,
         alt_override_m=None,
+        nav_pvt_alt_mm_override=None,
         heading_deg=None,
         heading_only=False,
     ):
@@ -116,6 +117,7 @@ class GpsPortMode:
                 alt_m,
                 vx_enu,
                 vy_enu,
+                nav_pvt_alt_mm_override=nav_pvt_alt_mm_override,
                 course_deg_override=course_override,
                 force_heading=heading_only,
             )
@@ -141,6 +143,8 @@ class GpsPortMode:
                     "posllh_hex": _bytes_hex(ubx_payload["posllh"]) if ubx_payload else None,
                     "velned_hex": _bytes_hex(ubx_payload["velned"]) if ubx_payload else None,
                     "sol_hex": _bytes_hex(ubx_payload["sol"]) if ubx_payload else None,
+                    "status_hex": _bytes_hex(ubx_payload["status"]) if ubx_payload else None,
+                    "dop_hex": _bytes_hex(ubx_payload["dop"]) if ubx_payload else None,
                     "sats": ubx_payload.get("sats") if ubx_payload else None,
                 },
             }

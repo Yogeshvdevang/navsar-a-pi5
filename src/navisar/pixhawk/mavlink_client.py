@@ -54,9 +54,27 @@ class MavlinkInterface:
         except Exception as exc:
             raise RuntimeError("Failed to receive MAVLink heartbeat") from exc
 
+    def _warn_recv_error(self, exc):
+        now = time.time()
+        if now - self._last_error_time > 2.0:
+            self._last_error_time = now
+            print(f"Warning: MAVLink recv error ({exc})")
+
+    def recv_match_safe(self, **kwargs):
+        """Receive one MAVLink message, guarding known pymavlink runtime errors."""
+        try:
+            return self.master.recv_match(**kwargs)
+        except serial.SerialException as exc:
+            self._warn_recv_error(exc)
+            return None
+        except TypeError as exc:
+            # pymavlink can raise this when an incoming message instance map is malformed.
+            self._warn_recv_error(exc)
+            return None
+
     def recv_distance_sensor(self):
         """Receive a non-blocking DISTANCE_SENSOR message."""
-        return self.master.recv_match(type="DISTANCE_SENSOR", blocking=False)
+        return self.recv_match_safe(type="DISTANCE_SENSOR", blocking=False)
 
     def request_message_interval(self, msg_id, rate_hz):
         """Request periodic MAVLink messages by ID."""
@@ -174,21 +192,14 @@ class MavlinkInterface:
 
     def recv_gps_raw(self):
         """Receive the raw GPS message without parsing."""
-        return self.master.recv_match(
+        return self.recv_match_safe(
             type=["GPS_RAW_INT", "GLOBAL_POSITION_INT"],
             blocking=False,
         )
 
     def recv_attitude(self):
         """Receive an ATTITUDE message and cache it."""
-        try:
-            msg = self.master.recv_match(type="ATTITUDE", blocking=False)
-        except serial.SerialException as exc:
-            now = time.time()
-            if now - self._last_error_time > 2.0:
-                self._last_error_time = now
-                print(f"Warning: MAVLink serial error ({exc})")
-            return None
+        msg = self.recv_match_safe(type="ATTITUDE", blocking=False)
         if msg is None:
             return None
         att = {
@@ -205,14 +216,7 @@ class MavlinkInterface:
 
     def recv_imu(self):
         """Receive a HIGHRES_IMU or RAW_IMU message and return parsed accel/gyro data."""
-        try:
-            msg = self.master.recv_match(type=["HIGHRES_IMU", "RAW_IMU"], blocking=False)
-        except serial.SerialException as exc:
-            now = time.time()
-            if now - self._last_error_time > 2.0:
-                self._last_error_time = now
-                print(f"Warning: MAVLink serial error ({exc})")
-            return None
+        msg = self.recv_match_safe(type=["HIGHRES_IMU", "RAW_IMU"], blocking=False)
         if msg is None:
             return None
         msg_type = msg.get_type()
@@ -242,17 +246,16 @@ class MavlinkInterface:
 
     def recv_barometer(self):
         """Receive a barometer-related message."""
-        try:
-            msg = self.master.recv_match(
-                type=["SCALED_PRESSURE", "SCALED_PRESSURE2", "SCALED_PRESSURE3", "VFR_HUD"],
-                blocking=False,
-            )
-        except serial.SerialException as exc:
-            now = time.time()
-            if now - self._last_error_time > 2.0:
-                self._last_error_time = now
-                print(f"Warning: MAVLink serial error ({exc})")
-            return None
+        msg = self.recv_match_safe(
+            type=[
+                "SCALED_PRESSURE",
+                "SCALED_PRESSURE2",
+                "SCALED_PRESSURE3",
+                "HIGHRES_IMU",
+                "VFR_HUD",
+            ],
+            blocking=False,
+        )
         if msg is None:
             return None
         msg_type = msg.get_type()
@@ -260,13 +263,35 @@ class MavlinkInterface:
             return {
                 "alt_m": float(msg.alt),
                 "press_hpa": None,
+                "temp_c": None,
+                "press_diff_hpa": None,
+                "time_s": time.time(),
+            }
+        if msg_type == "HIGHRES_IMU":
+            abs_pressure = getattr(msg, "abs_pressure", None)
+            press_hpa = float(abs_pressure) if abs_pressure is not None else None
+            temp_raw = getattr(msg, "temperature", None)
+            temp_c = float(temp_raw) if temp_raw is not None else None
+            press_diff = getattr(msg, "diff_pressure", None)
+            press_diff_hpa = float(press_diff) if press_diff is not None else None
+            return {
+                "alt_m": None,
+                "press_hpa": press_hpa,
+                "temp_c": temp_c,
+                "press_diff_hpa": press_diff_hpa,
                 "time_s": time.time(),
             }
         press_abs = getattr(msg, "press_abs", None)
         press_hpa = float(press_abs) if press_abs is not None else None
+        temp_raw = getattr(msg, "temperature", None)
+        temp_c = float(temp_raw) / 100.0 if temp_raw is not None else None
+        press_diff = getattr(msg, "press_diff", None)
+        press_diff_hpa = float(press_diff) if press_diff is not None else None
         return {
             "alt_m": None,
             "press_hpa": press_hpa,
+            "temp_c": temp_c,
+            "press_diff_hpa": press_diff_hpa,
             "time_s": time.time(),
         }
 

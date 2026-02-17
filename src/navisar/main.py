@@ -137,6 +137,7 @@ GPS_ORIGIN_ALT = os.getenv("GPS_ORIGIN_ALT")
 
 # --- SERIAL OUTPUT ---
 PRINT_BARO_VALUES = True
+PRINT_SENSOR_VALUES = True
 PRINT_INTERVAL_S = 0.5
 
 # --- OPTICAL FLOW ---
@@ -1006,6 +1007,7 @@ def _init_mavlink_interface(pixhawk_cfg, use_barometer, use_mavlink=None):
                     "MAVLINK_MSG_ID_SCALED_PRESSURE",
                     "MAVLINK_MSG_ID_SCALED_PRESSURE2",
                     "MAVLINK_MSG_ID_SCALED_PRESSURE3",
+                    "MAVLINK_MSG_ID_HIGHRES_IMU",
                     "MAVLINK_MSG_ID_VFR_HUD",
                 ):
                     msg_id = getattr(mavutil.mavlink, msg_name, None)
@@ -1527,6 +1529,8 @@ def main():
     gps_output_update_s = float(
         gps_output_cfg.get("update_s", GPS_OUTPUT_UPDATE_S)
     )
+    gps_output_ubx_h_acc_mm = 500
+    gps_output_ubx_v_acc_mm = 100
     gps_output_print = bool(gps_output_cfg.get("print", True))
     gps_output_raw_print = bool(gps_output_cfg.get("raw_print", False))
     nmea_emitter = None
@@ -1574,6 +1578,8 @@ def main():
             min_sats=gps_output_min_sats,
             max_sats=gps_output_max_sats,
             update_s=gps_output_update_s,
+            h_acc_mm=gps_output_ubx_h_acc_mm,
+            v_acc_mm=gps_output_ubx_v_acc_mm,
             raw_print=gps_output_raw_print,
         )
     gps_format_order = ("ubx", "nmea", "ubx_nmea")
@@ -1896,6 +1902,8 @@ def main():
                 min_sats=gps_output_min_sats,
                 max_sats=gps_output_max_sats,
                 update_s=gps_output_update_s,
+                h_acc_mm=gps_output_ubx_h_acc_mm,
+                v_acc_mm=gps_output_ubx_v_acc_mm,
                 raw_print=gps_output_raw_print,
             )
         except Exception as exc:
@@ -1942,6 +1950,60 @@ def main():
 
     apply_gps_format_selection()
 
+    def _print_sensor_debug(now, barometer_driver, optical_sample, interval_s):
+        if now - last_report_times["baro"] < interval_s:
+            return
+        last_report_times["baro"] = now
+        baro_parts = []
+        if barometer_driver is None:
+            baro_parts.append("BARO_ERROR(driver_unavailable)")
+        else:
+            height_m = barometer_driver.current_m
+            raw_alt_m = barometer_driver.raw_alt_m
+            last_msg_time = getattr(barometer_driver, "last_msg_time", None)
+            if height_m is not None and math.isfinite(height_m):
+                baro_parts.append(f"baro_h={height_m:.3f}m")
+                if raw_alt_m is not None:
+                    baro_parts.append(f"baro_alt_m={raw_alt_m:.3f}")
+            else:
+                reasons = []
+                if last_msg_time is None:
+                    reasons.append("no_messages")
+                else:
+                    reasons.append(f"last_msg_age_s={now - last_msg_time:.2f}")
+                if raw_alt_m is None:
+                    reasons.append("raw_alt_m=None")
+                baro_parts.append(f"BARO_ERROR({', '.join(reasons)})")
+
+        opt_parts = []
+        if optical_sample is None:
+            opt_parts.append("OPT_ERROR(no_messages)")
+        else:
+            dist_mm = getattr(optical_sample, "distance_mm", None)
+            dist_ok = bool(getattr(optical_sample, "dist_ok", 0))
+            flow_ok = bool(getattr(optical_sample, "flow_ok", 0))
+            dist_m = None
+            if dist_mm is not None:
+                try:
+                    dist_m = float(dist_mm) / 1000.0
+                except Exception:
+                    dist_m = None
+            if dist_m is not None:
+                opt_parts.append(f"opt_h={dist_m:.3f}m")
+            else:
+                opt_parts.append("OPT_ERROR(dist_missing)")
+            opt_parts.append(f"opt_dist_ok={int(dist_ok)}")
+            opt_parts.append(f"opt_flow_ok={int(flow_ok)}")
+            flow_vx = getattr(optical_sample, "flow_vx", None)
+            flow_vy = getattr(optical_sample, "flow_vy", None)
+            if flow_vx is not None and flow_vy is not None:
+                opt_parts.append(f"opt_flow=({flow_vx},{flow_vy})")
+            flow_q = getattr(optical_sample, "flow_quality", None)
+            if flow_q is not None:
+                opt_parts.append(f"opt_q={flow_q}")
+
+        print(f"SENSORS: {' '.join(baro_parts)} | {' '.join(opt_parts)}")
+
     def select_runtime_heading(active_mode, vx_enu=None, vy_enu=None):
         """Select heading source: optical flow > VO > compass."""
         compass_heading = _safe_float(last_compass_in.get("heading_deg"))
@@ -1987,9 +2049,9 @@ def main():
             heading_state["source"] = source
         return heading_state.get("deg"), heading_state.get("source", "none")
     optical_flow_mav_cfg = pixhawk_cfg.get("optical_flow_mavlink", {})
-    flow_min_quality = int(optical_flow_mav_cfg.get("min_quality", 30))
+    flow_min_quality = int(optical_flow_mav_cfg.get("min_quality", 50))
     flow_max_speed_mps = float(optical_flow_mav_cfg.get("max_speed_mps", 2.0))
-    flow_deadband_mps = float(optical_flow_mav_cfg.get("deadband_mps", 0.05))
+    flow_deadband_mps = float(optical_flow_mav_cfg.get("deadband_mps", 0.01))
     flow_smoothing_alpha = float(optical_flow_mav_cfg.get("smoothing_alpha", 0.2))
     flow_stationary_speed_mps = float(
         optical_flow_mav_cfg.get("stationary_speed_mps", 0.02)
@@ -2123,7 +2185,7 @@ def main():
                 imu_estimator.update_attitude(att["roll"], att["pitch"], att["yaw"])
                 last_attitude["value"] = att
             while True:
-                imu_msg = mavlink_interface.master.recv_match(
+                imu_msg = mavlink_interface.recv_match_safe(
                     type=["HIGHRES_IMU", "RAW_IMU"],
                     blocking=False,
                 )
@@ -2214,13 +2276,15 @@ def main():
                 }
 
         barometer_driver = vo.height_estimator.barometer_driver
-        print_baro = pixhawk_cfg.get("print_baro_values", PRINT_BARO_VALUES)
+        print_sensors = pixhawk_cfg.get("print_sensor_values", PRINT_SENSOR_VALUES)
         print_interval_s = pixhawk_cfg.get("print_interval_s", PRINT_INTERVAL_S)
-        if print_baro and barometer_driver is not None:
-            height_m = barometer_driver.current_m
-            if height_m is not None:
-                if now - last_report_times["baro"] >= print_interval_s:
-                    last_report_times["baro"] = now
+        if print_sensors:
+            _print_sensor_debug(
+                now,
+                barometer_driver,
+                last_optical_flow.get("value"),
+                print_interval_s,
+            )
 
         if yaw_offset_deg:
             theta = math.radians(yaw_offset_deg)
@@ -2505,6 +2569,9 @@ def main():
                             "raw_press_hpa": _safe_float(barometer_driver.raw_press_hpa)
                             if barometer_driver
                             else None,
+                            "raw_temp_c": _safe_float(barometer_driver.raw_temp_c)
+                            if barometer_driver
+                            else None,
                             "raw_alt_m": _safe_float(barometer_driver.raw_alt_m)
                             if barometer_driver
                             else None,
@@ -2620,12 +2687,21 @@ def main():
             while True:
                 now = time.time()
                 current_altitude_offset_m = float(altitude_offset_state.get())
+                print_sensors = pixhawk_cfg.get("print_sensor_values", PRINT_SENSOR_VALUES)
+                print_interval_s = pixhawk_cfg.get("print_interval_s", PRINT_INTERVAL_S)
                 if barometer_driver is not None:
                     barometer_driver.update()
                 if optical_reader is not None:
                     sample = optical_reader.get_latest()
                     if sample is not None:
                         last_optical_flow["value"] = sample
+                if print_sensors:
+                    _print_sensor_debug(
+                        now,
+                        barometer_driver,
+                        last_optical_flow.get("value"),
+                        print_interval_s,
+                    )
                 _update_compass(now)
                 _gps_format_requested, gps_format_active = apply_gps_format_selection()
 
@@ -2786,6 +2862,9 @@ def main():
                                     if barometer_driver
                                     else None,
                                     "raw_press_hpa": _safe_float(barometer_driver.raw_press_hpa)
+                                    if barometer_driver
+                                    else None,
+                                    "raw_temp_c": _safe_float(barometer_driver.raw_temp_c)
                                     if barometer_driver
                                     else None,
                                     "raw_alt_m": _safe_float(barometer_driver.raw_alt_m)

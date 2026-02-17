@@ -2,7 +2,7 @@ use_mavlink: true
 use_barometer: true
 use_imu_fusion: true
 use_sensor_fusion: false
-device: /dev/ttyAMA0
+device: /dev/ttyACM0
 baud: 115200
 attitude_rate_hz: 30.0
 fallback_altitude_m: 1.0
@@ -42,7 +42,7 @@ optical_flow:
   baud: 115200
   rate_hz: 60.0
   heartbeat_interval_s: 0.6
-  print: false
+  print: true
   max_flow_raw: 120
   altitude_scale: 1.1
   altitude_smoothing_alpha: 0.35
@@ -55,13 +55,13 @@ optical_flow_mavlink:
   print: true
   range_min_m: 0.01
   range_max_m: 8.0
-  min_quality: 80
+  min_quality: 50
   max_speed_mps: 0.6
-  deadband_mps: 0.14
+  deadband_mps: 0.01
   smoothing_alpha: 0.08
   stationary_speed_mps: 0.03
   stationary_samples: 30
-  stationary_quality_min: 80
+  stationary_quality_min: 50
   speed_scale: 0.01
 optical_flow_vo:
   switch_m: 8.0
@@ -83,6 +83,8 @@ gps_output:
   port: /dev/ttyAMA0
   baud: 230400
   rate_hz: 10
+  ubx_h_acc_mm: 500
+  ubx_v_acc_mm: 100
   fix_quality: 1
   min_sats: 10
   max_sats: 20
@@ -99,6 +101,7 @@ vps_gps:
   ignore_flags: 28
 print_gps_values: false
 print_baro_values: false
+print_sensor_values: true
 print_interval_s: 0.5
 gnss_monitor:
   spoof_detector:

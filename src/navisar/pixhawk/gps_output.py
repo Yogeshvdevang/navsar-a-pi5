@@ -173,6 +173,8 @@ class UbxSerialEmitter:
         min_sats,
         max_sats,
         update_s,
+        h_acc_mm=500,
+        v_acc_mm=100,
         max_heading_delta_deg=20.0,
         raw_print=False,
     ):
@@ -181,6 +183,8 @@ class UbxSerialEmitter:
         self.baud = baud
         self.rate_hz = min(max(rate_hz, 5.0), 10.0)
         self.fix_type = int(fix_type)
+        self.h_acc_mm = max(1, int(h_acc_mm))
+        self.v_acc_mm = max(1, int(v_acc_mm))
         self.max_heading_delta_deg = max_heading_delta_deg
         self.raw_print = raw_print
         self._ser = serial.Serial(port, baud, timeout=0)
@@ -227,14 +231,20 @@ class UbxSerialEmitter:
         return header + length_bytes + payload + checksum
 
     @classmethod
-    def _create_nav_posllh(cls, lat_deg, lon_deg, alt_m, time_of_week_ms):
+    def _create_nav_posllh(
+        cls,
+        lat_deg,
+        lon_deg,
+        alt_m,
+        time_of_week_ms,
+        h_acc_mm,
+        v_acc_mm,
+    ):
         """Create a UBX NAV-POSLLH message payload."""
         lat_1e7 = int(lat_deg * 1e7)
         lon_1e7 = int(lon_deg * 1e7)
         alt_mm = int(alt_m * 1000)
         h_msl_mm = alt_mm
-        h_acc_mm = 2000
-        v_acc_mm = 3000
         payload = struct.pack(
             "<IiiiiII",
             time_of_week_ms,
@@ -351,6 +361,7 @@ class UbxSerialEmitter:
         lat_deg,
         lon_deg,
         alt_m,
+        nav_pvt_alt_mm_override,
         vel_n_mm,
         vel_e_mm,
         vel_d_mm,
@@ -361,6 +372,8 @@ class UbxSerialEmitter:
         now,
         fix_type,
         p_dop_01,
+        h_acc_mm,
+        v_acc_mm,
     ):
         """Create a UBX NAV-PVT message payload."""
         gps_fix = int(fix_type)
@@ -370,8 +383,11 @@ class UbxSerialEmitter:
 
         lat_1e7 = int(lat_deg * 1e7)
         lon_1e7 = int(lon_deg * 1e7)
-        alt_mm = int(alt_m * 1000)
-        h_msl_mm = int(alt_m * 1000)
+        if nav_pvt_alt_mm_override is None:
+            alt_mm = int(alt_m * 1000)
+        else:
+            alt_mm = int(nav_pvt_alt_mm_override)
+        h_msl_mm = alt_mm
 
         heading_1e5 = int(heading_deg * 1e5)
         payload = struct.pack(
@@ -394,8 +410,8 @@ class UbxSerialEmitter:
             lat_1e7,
             alt_mm,
             h_msl_mm,
-            500,  # hAcc
-            1000,  # vAcc
+            int(h_acc_mm),  # hAcc
+            int(v_acc_mm),  # vAcc
             vel_n_mm,
             vel_e_mm,
             vel_d_mm,
@@ -420,6 +436,7 @@ class UbxSerialEmitter:
         vx_e,
         vy_n,
         ekf_ok=True,
+        nav_pvt_alt_mm_override=None,
         course_deg_override=None,
         force_heading=False,
     ):
@@ -464,6 +481,7 @@ class UbxSerialEmitter:
             lat,
             lon,
             alt_m,
+            nav_pvt_alt_mm_override,
             vel_n_mm,
             vel_e_mm,
             vel_d_mm,
@@ -474,8 +492,17 @@ class UbxSerialEmitter:
             now.timetuple(),
             self.fix_type,
             p_dop_01,
+            self.h_acc_mm,
+            self.v_acc_mm,
         )
-        posllh = self._create_nav_posllh(lat, lon, alt_m, time_of_week_ms)
+        posllh = self._create_nav_posllh(
+            lat,
+            lon,
+            alt_m,
+            time_of_week_ms,
+            self.h_acc_mm,
+            self.v_acc_mm,
+        )
         velned = self._create_nav_velned(
             vel_n_mm,
             vel_e_mm,
