@@ -883,12 +883,47 @@
       const streamState = {
         useSim: true,
         running: false,
+        mode: "mjpeg",
+        snapshotTimer: null,
+        streamRetryTimer: null,
       };
 
       const setCameraMode = (useSim) => {
         if (!voStream || !camSim) return;
         voStream.style.display = useSim ? "none" : "block";
         camSim.style.display = useSim ? "block" : "none";
+      };
+
+      const stopSnapshotMode = () => {
+        if (streamState.snapshotTimer) {
+          clearInterval(streamState.snapshotTimer);
+          streamState.snapshotTimer = null;
+        }
+      };
+
+      const startSnapshotMode = () => {
+        if (!voStream) return;
+        streamState.mode = "snapshot";
+        stopSnapshotMode();
+        const tickSnapshot = () => {
+          voStream.src = `/frame.jpg?t=${Date.now()}`;
+        };
+        tickSnapshot();
+        streamState.snapshotTimer = setInterval(tickSnapshot, 200);
+        if (!streamState.streamRetryTimer) {
+          streamState.streamRetryTimer = setInterval(() => {
+            if (streamState.mode === "snapshot") {
+              voStream.src = `/video?t=${Date.now()}`;
+            }
+          }, 3000);
+        }
+      };
+
+      const startMjpegMode = () => {
+        if (!voStream) return;
+        streamState.mode = "mjpeg";
+        stopSnapshotMode();
+        voStream.src = "/video";
       };
 
       const fitCamCanvas = () => {
@@ -2075,23 +2110,34 @@
       if (voStream) {
         streamState.useSim = true;
         setCameraMode(true);
+        startMjpegMode();
         voStream.addEventListener("load", () => {
           streamState.useSim = false;
           setCameraMode(false);
+          if (streamState.mode === "snapshot" && voStream.currentSrc.includes("/video")) {
+            streamState.mode = "mjpeg";
+            stopSnapshotMode();
+          }
         });
         voStream.addEventListener("error", () => {
-          streamState.useSim = true;
-          setCameraMode(true);
+          if (streamState.mode === "mjpeg") {
+            startSnapshotMode();
+          } else {
+            streamState.useSim = true;
+            setCameraMode(true);
+          }
         });
         voStream.addEventListener("abort", () => {
-          streamState.useSim = true;
-          setCameraMode(true);
+          if (streamState.mode === "mjpeg") {
+            startSnapshotMode();
+          } else {
+            streamState.useSim = true;
+            setCameraMode(true);
+          }
         });
       }
       streamState.running = true;
       requestAnimationFrame(cameraLoop);
-      // Default to optical-flow GPS when GUI opens.
-      setMode("optical_flow_gps_port");
       setInterval(() => {
         tick().then(() => {
           const modeEl = document.getElementById("mode");

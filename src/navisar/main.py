@@ -579,6 +579,21 @@ def _make_dashboard_handler(
                         time.sleep(0.1)
                 except (BrokenPipeError, ConnectionResetError):
                     return
+            if self.path.startswith("/frame.jpg"):
+                jpg, _ts = frame_state.snapshot()
+                if not jpg:
+                    self.send_response(503)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Content-Length", str(len(jpg)))
+                self.end_headers()
+                self.wfile.write(jpg)
+                return
             return super().do_GET()
 
         def do_POST(self):
