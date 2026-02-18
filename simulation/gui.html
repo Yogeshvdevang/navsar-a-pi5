@@ -570,6 +570,13 @@
         <button id="blackbox-download-btn">Download TXT+Video</button>
       </div>
       <div class="gps-origin-note" id="blackbox-status">Black box: idle</div>
+      <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">Client-Side Recorder</div>
+      <div class="mode-buttons" id="client-recorder-buttons">
+        <button id="client-rec-start-btn">Start Client Rec</button>
+        <button id="client-rec-stop-btn">Stop Client Rec</button>
+        <button id="client-rec-download-btn">Download (Fallback)</button>
+      </div>
+      <div class="gps-origin-note" id="client-rec-status">Client recorder: idle</div>
       <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">GPS Mode</div>
       <div class="gps-origin-controls">
         <div class="mode-buttons" id="gps-origin-buttons">
@@ -927,11 +934,74 @@
         snapshotTimer: null,
         streamRetryTimer: null,
       };
+      const clientRecorderState = {
+        recording: false,
+        mediaRecorder: null,
+        videoChunks: [],
+        dataLines: [],
+        startedAt: null,
+        stoppedAt: null,
+        captureCanvas: null,
+        captureCtx: null,
+        captureTimer: null,
+        mimeType: "",
+        fsMode: false,
+        saveRootName: "",
+        dataWritable: null,
+        videoWritable: null,
+        writeChain: Promise.resolve(),
+      };
 
       const setCameraMode = (useSim) => {
         if (!voStream || !camSim) return;
         voStream.style.display = useSim ? "none" : "block";
         camSim.style.display = useSim ? "block" : "none";
+      };
+
+      const getClientCaptureSource = () => {
+        if (!streamState.useSim && voStream && voStream.naturalWidth > 0 && voStream.naturalHeight > 0) {
+          return { source: voStream, width: voStream.naturalWidth, height: voStream.naturalHeight };
+        }
+        if (camSim) {
+          return { source: camSim, width: Math.max(1, camSim.width), height: Math.max(1, camSim.height) };
+        }
+        return null;
+      };
+
+      const ensureClientCaptureCanvas = () => {
+        const src = getClientCaptureSource();
+        const w = src?.width || 640;
+        const h = src?.height || 360;
+        if (!clientRecorderState.captureCanvas) {
+          clientRecorderState.captureCanvas = document.createElement("canvas");
+          clientRecorderState.captureCtx = clientRecorderState.captureCanvas.getContext("2d");
+        }
+        if (clientRecorderState.captureCanvas.width !== w || clientRecorderState.captureCanvas.height !== h) {
+          clientRecorderState.captureCanvas.width = w;
+          clientRecorderState.captureCanvas.height = h;
+        }
+        return src;
+      };
+
+      const drawClientCaptureFrame = () => {
+        if (!clientRecorderState.recording) return;
+        const src = ensureClientCaptureCanvas();
+        const ctx = clientRecorderState.captureCtx;
+        const canvas = clientRecorderState.captureCanvas;
+        if (!ctx || !canvas) return;
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        try {
+          if (src?.source) {
+            ctx.drawImage(src.source, 0, 0, canvas.width, canvas.height);
+          } else {
+            ctx.fillStyle = "#fff";
+            ctx.font = "16px sans-serif";
+            ctx.fillText("No video source", 20, 30);
+          }
+        } catch (_) {
+          // ignore draw errors for transient frame states
+        }
       };
 
       const stopSnapshotMode = () => {
@@ -1501,6 +1571,19 @@
           const res = await fetch(dataUrl, { cache: "no-store" });
           const data = await res.json();
           window.__lastData = data;
+          if (clientRecorderState.recording) {
+            const row = JSON.stringify({
+              client_ts_ms: Date.now(),
+              payload: data,
+            });
+            if (clientRecorderState.fsMode && clientRecorderState.dataWritable) {
+              queueClientWrite(async () => {
+                await clientRecorderState.dataWritable.write(`${row}\n`);
+              });
+            } else {
+              clientRecorderState.dataLines.push(row);
+            }
+          }
           updateAccessUrl(data);
 
           setText("mode", data.mode, 0);
@@ -1793,6 +1876,10 @@
       const blackboxStopBtn = document.getElementById("blackbox-stop-btn");
       const blackboxDownloadBtn = document.getElementById("blackbox-download-btn");
       const blackboxStatusEl = document.getElementById("blackbox-status");
+      const clientRecStartBtn = document.getElementById("client-rec-start-btn");
+      const clientRecStopBtn = document.getElementById("client-rec-stop-btn");
+      const clientRecDownloadBtn = document.getElementById("client-rec-download-btn");
+      const clientRecStatusEl = document.getElementById("client-rec-status");
       const gpsAutoBtn = document.getElementById("gps-auto-btn");
       const gpsVariableBtn = document.getElementById("gps-variable-btn");
       const gpsOriginFields = document.getElementById("gps-origin-fields");
@@ -1820,6 +1907,17 @@
 
       const setBlackboxStatus = (text) => {
         if (blackboxStatusEl) blackboxStatusEl.textContent = text;
+      };
+
+      const setClientRecStatus = (text) => {
+        if (clientRecStatusEl) clientRecStatusEl.textContent = text;
+      };
+
+      const queueClientWrite = (op) => {
+        clientRecorderState.writeChain = clientRecorderState.writeChain
+          .then(op)
+          .catch(() => {});
+        return clientRecorderState.writeChain;
       };
 
       const refreshBlackboxState = async () => {
@@ -1881,6 +1979,168 @@
         link.click();
       };
 
+      const downloadBlob = (blob, filename) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+
+      const updateClientRecButtons = () => {
+        const recording = clientRecorderState.recording;
+        if (clientRecStartBtn) clientRecStartBtn.disabled = recording;
+        if (clientRecStopBtn) clientRecStopBtn.disabled = !recording;
+        const hasData = clientRecorderState.dataLines.length > 0 || clientRecorderState.videoChunks.length > 0;
+        const disableDownload = recording || clientRecorderState.fsMode || !hasData;
+        if (clientRecDownloadBtn) clientRecDownloadBtn.disabled = disableDownload;
+        if (clientRecDownloadBtn) {
+          clientRecDownloadBtn.style.display = clientRecorderState.fsMode ? "none" : "inline-block";
+        }
+      };
+
+      const pickRecorderMime = () => {
+        const candidates = [
+          "video/webm;codecs=vp9",
+          "video/webm;codecs=vp8",
+          "video/webm",
+        ];
+        for (const mime of candidates) {
+          if (window.MediaRecorder && MediaRecorder.isTypeSupported(mime)) return mime;
+        }
+        return "";
+      };
+
+      const startClientRecorder = async () => {
+        if (clientRecorderState.recording) return;
+        if (!window.MediaRecorder) {
+          setClientRecStatus("Client recorder: MediaRecorder not supported");
+          return;
+        }
+        clientRecorderState.fsMode = false;
+        clientRecorderState.dataWritable = null;
+        clientRecorderState.videoWritable = null;
+        ensureClientCaptureCanvas();
+        drawClientCaptureFrame();
+        const stream = clientRecorderState.captureCanvas.captureStream(10);
+        const mimeType = pickRecorderMime();
+        try {
+          const stampBase = new Date().toISOString().replace(/[:.]/g, "-");
+          clientRecorderState.saveRootName = `client_recording_${stampBase}`;
+          if (window.showDirectoryPicker) {
+            try {
+              const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+              const txtHandle = await dirHandle.getFileHandle(
+                `${clientRecorderState.saveRootName}_flight_data.txt`,
+                { create: true }
+              );
+              const webmHandle = await dirHandle.getFileHandle(
+                `${clientRecorderState.saveRootName}_flight_video.webm`,
+                { create: true }
+              );
+              clientRecorderState.dataWritable = await txtHandle.createWritable();
+              clientRecorderState.videoWritable = await webmHandle.createWritable();
+              clientRecorderState.fsMode = true;
+            } catch (_) {
+              clientRecorderState.fsMode = false;
+              clientRecorderState.dataWritable = null;
+              clientRecorderState.videoWritable = null;
+            }
+          }
+          const recorder = mimeType
+            ? new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 3_000_000 })
+            : new MediaRecorder(stream);
+          clientRecorderState.recording = true;
+          clientRecorderState.mediaRecorder = recorder;
+          clientRecorderState.videoChunks = [];
+          clientRecorderState.dataLines = [];
+          clientRecorderState.startedAt = Date.now();
+          clientRecorderState.stoppedAt = null;
+          clientRecorderState.mimeType = mimeType || recorder.mimeType || "video/webm";
+          clientRecorderState.captureTimer = setInterval(drawClientCaptureFrame, 100);
+          recorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+              if (clientRecorderState.fsMode && clientRecorderState.videoWritable) {
+                const chunk = event.data;
+                queueClientWrite(async () => {
+                  await clientRecorderState.videoWritable.write(chunk);
+                });
+              } else {
+                clientRecorderState.videoChunks.push(event.data);
+              }
+            }
+          };
+          recorder.onstop = async () => {
+            clientRecorderState.recording = false;
+            clientRecorderState.stoppedAt = Date.now();
+            if (clientRecorderState.captureTimer) {
+              clearInterval(clientRecorderState.captureTimer);
+              clientRecorderState.captureTimer = null;
+            }
+            await clientRecorderState.writeChain;
+            if (clientRecorderState.fsMode) {
+              try {
+                if (clientRecorderState.dataWritable) await clientRecorderState.dataWritable.close();
+              } catch (_) {}
+              try {
+                if (clientRecorderState.videoWritable) await clientRecorderState.videoWritable.close();
+              } catch (_) {}
+              clientRecorderState.dataWritable = null;
+              clientRecorderState.videoWritable = null;
+            }
+            const durationMs = Math.max(0, (clientRecorderState.stoppedAt || Date.now()) - (clientRecorderState.startedAt || Date.now()));
+            setClientRecStatus(
+              clientRecorderState.fsMode
+                ? `Client recorder: saved live to selected folder | duration=${(durationMs / 1000).toFixed(1)}s`
+                : `Client recorder: stopped | duration=${(durationMs / 1000).toFixed(1)}s | points=${clientRecorderState.dataLines.length} | chunks=${clientRecorderState.videoChunks.length}`
+            );
+            updateClientRecButtons();
+          };
+          recorder.start(1000);
+          setClientRecStatus(
+            clientRecorderState.fsMode
+              ? "Client recorder: recording (live save to your device folder)"
+              : "Client recorder: recording (memory mode)"
+          );
+          appendLog("client recorder started");
+          updateClientRecButtons();
+        } catch (_) {
+          clientRecorderState.recording = false;
+          setClientRecStatus("Client recorder: failed to start");
+          updateClientRecButtons();
+        }
+      };
+
+      const stopClientRecorder = async () => {
+        if (!clientRecorderState.recording || !clientRecorderState.mediaRecorder) return;
+        try {
+          clientRecorderState.mediaRecorder.stop();
+        } catch (_) {
+          // ignore
+        }
+      };
+
+      const downloadClientRecorder = () => {
+        if (clientRecorderState.recording) return;
+        if (clientRecorderState.fsMode) return;
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        if (clientRecorderState.dataLines.length > 0) {
+          const textBlob = new Blob([clientRecorderState.dataLines.join("\n") + "\n"], {
+            type: "text/plain;charset=utf-8",
+          });
+          downloadBlob(textBlob, `client_flight_data_${stamp}.txt`);
+        }
+        if (clientRecorderState.videoChunks.length > 0) {
+          const videoBlob = new Blob(clientRecorderState.videoChunks, {
+            type: clientRecorderState.mimeType || "video/webm",
+          });
+          downloadBlob(videoBlob, `client_flight_video_${stamp}.webm`);
+        }
+      };
+
       if (blackboxStartBtn) {
         blackboxStartBtn.addEventListener("click", startBlackbox);
       }
@@ -1890,6 +2150,16 @@
       if (blackboxDownloadBtn) {
         blackboxDownloadBtn.addEventListener("click", downloadBlackbox);
       }
+      if (clientRecStartBtn) {
+        clientRecStartBtn.addEventListener("click", startClientRecorder);
+      }
+      if (clientRecStopBtn) {
+        clientRecStopBtn.addEventListener("click", stopClientRecorder);
+      }
+      if (clientRecDownloadBtn) {
+        clientRecDownloadBtn.addEventListener("click", downloadClientRecorder);
+      }
+      updateClientRecButtons();
 
       const updateGpsOriginUi = () => {
         const isAuto = gpsOriginMode.value === "auto";
