@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NAVISAR GPS vs Optical Calibration</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --panel: #161b22;
+        --border: #30363d;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --gps: #2ea043;
+        --of: #f78166;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      @media (max-width: 900px) {
+        .row { grid-template-columns: 1fr; }
+      }
+      .top {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .label { color: var(--muted); font-size: 13px; }
+      .value { font-weight: 600; }
+      .scale-wrap { display: grid; gap: 6px; min-width: 280px; }
+      input[type="range"] { width: 100%; }
+      .stat-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px 12px;
+        margin-top: 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+      canvas {
+        width: 100%;
+        height: 320px;
+        background: #010409;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      button {
+        background: #21262d;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        cursor: pointer;
+      }
+      .err {
+        color: #ff7b72;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="panel top">
+        <div>
+          <div class="label">Calibration Status</div>
+          <div class="value" id="status">Connecting...</div>
+          <div class="label" id="endpoint-label"></div>
+        </div>
+        <div class="scale-wrap">
+          <div class="label">Optical Flow Scale: <span class="value" id="scale-value">1.00</span></div>
+          <input id="scale" type="range" min="0.10" max="5.00" step="0.01" value="1.00" />
+        </div>
+        <button id="reset-btn" type="button">Reset OF Integration</button>
+      </div>
+
+      <div class="row">
+        <div class="panel">
+          <div class="label">Real GPS Track</div>
+          <canvas id="gps-canvas"></canvas>
+          <div class="stat-grid">
+            <div>Lat</div><div id="gps-lat">--</div>
+            <div>Lon</div><div id="gps-lon">--</div>
+            <div>Fix</div><div id="gps-fix">--</div>
+            <div>X(m)</div><div id="gps-x">--</div>
+            <div>Y(m)</div><div id="gps-y">--</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="label">Optical Flow -> GPS Track (scaled)</div>
+          <canvas id="of-canvas"></canvas>
+          <div class="stat-grid">
+            <div>Lat</div><div id="of-lat">--</div>
+            <div>Lon</div><div id="of-lon">--</div>
+            <div>Speed X(m/s)</div><div id="of-vx">--</div>
+            <div>Speed Y(m/s)</div><div id="of-vy">--</div>
+            <div>X(m)</div><div id="of-x">--</div>
+            <div>Y(m)</div><div id="of-y">--</div>
+          </div>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:12px;">
+        <div class="label">Error (Optical vs Real GPS in local frame)</div>
+        <div class="value" id="err-m">--</div>
+        <div class="err" id="error-msg"></div>
+      </div>
+    </div>
+
+    <script>
+      const scaleEl = document.getElementById("scale");
+      const scaleValueEl = document.getElementById("scale-value");
+      const statusEl = document.getElementById("status");
+      const endpointLabelEl = document.getElementById("endpoint-label");
+      const errorMsgEl = document.getElementById("error-msg");
+
+      const gpsCanvas = document.getElementById("gps-canvas");
+      const gpsCtx = gpsCanvas.getContext("2d");
+      const ofCanvas = document.getElementById("of-canvas");
+      const ofCtx = ofCanvas.getContext("2d");
+
+      const state = {
+        scale: 1.0,
+        origin: null,
+        lastPollTs: null,
+        gpsTrack: [],
+        ofTrack: [],
+        ofX: 0.0,
+        ofY: 0.0,
+        lastGps: null,
+        lastOfLatLon: null,
+      };
+
+      const fmt = (v, d = 6) => Number.isFinite(v) ? Number(v).toFixed(d) : "--";
+      const setText = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = val;
+      };
+
+      const llToLocal = (lat, lon, origin) => {
+        const R = 6378137.0;
+        const dLat = (lat - origin.lat) * Math.PI / 180.0;
+        const dLon = (lon - origin.lon) * Math.PI / 180.0;
+        const x = dLon * R * Math.cos(origin.lat * Math.PI / 180.0);
+        const y = dLat * R;
+        return { x, y };
+      };
+
+      const localToLl = (x, y, origin) => {
+        const R = 6378137.0;
+        const lat = origin.lat + (y / R) * 180.0 / Math.PI;
+        const lon = origin.lon + (x / (R * Math.cos(origin.lat * Math.PI / 180.0))) * 180.0 / Math.PI;
+        return { lat, lon };
+      };
+
+      const drawTrack = (ctx, canvas, track, color) => {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+        canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, rect.width, rect.height);
+        ctx.fillStyle = "#010409";
+        ctx.fillRect(0, 0, rect.width, rect.height);
+        if (!track.length) return;
+
+        let minX = track[0].x, maxX = track[0].x;
+        let minY = track[0].y, maxY = track[0].y;
+        for (const p of track) {
+          minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+          minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+        }
+        const pad = 24;
+        const sx = (rect.width - pad * 2) / Math.max(1e-6, maxX - minX);
+        const sy = (rect.height - pad * 2) / Math.max(1e-6, maxY - minY);
+        const s = Math.min(sx, sy);
+        const toPx = (p) => ({
+          x: pad + (p.x - minX) * s,
+          y: rect.height - pad - (p.y - minY) * s,
+        });
+
+        ctx.strokeStyle = "rgba(255,255,255,0.2)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(0.5, 0.5, rect.width - 1, rect.height - 1);
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        track.forEach((p, i) => {
+          const t = toPx(p);
+          if (i === 0) ctx.moveTo(t.x, t.y);
+          else ctx.lineTo(t.x, t.y);
+        });
+        ctx.stroke();
+
+        const last = toPx(track[track.length - 1]);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      };
+
+      const resetIntegration = () => {
+        state.lastPollTs = null;
+        state.ofX = 0.0;
+        state.ofY = 0.0;
+        state.ofTrack = [];
+        state.lastOfLatLon = null;
+      };
+
+      document.getElementById("reset-btn").addEventListener("click", resetIntegration);
+      scaleEl.addEventListener("input", () => {
+        state.scale = Number(scaleEl.value);
+        scaleValueEl.textContent = state.scale.toFixed(2);
+      });
+
+      const poll = async () => {
+        try {
+          const res = await fetch("/calibration-data", { cache: "no-store" });
+          const payload = await res.json();
+          if (!res.ok || payload.enabled === false) {
+            statusEl.textContent = "Disabled";
+            errorMsgEl.textContent = payload.error || "Calibration is disabled.";
+            return;
+          }
+          statusEl.textContent = "Running";
+          endpointLabelEl.textContent = (payload.url || window.location.origin || "") + "calibration.html";
+          errorMsgEl.textContent = "";
+
+          const now = performance.now() / 1000.0;
+          const gps = payload.gps_input || {};
+          const of = payload.optical_flow || {};
+
+          if (Number.isFinite(gps.lat) && Number.isFinite(gps.lon) && Number(gps.fix_type || 0) >= 3) {
+            if (!state.origin) {
+              state.origin = { lat: Number(gps.lat), lon: Number(gps.lon) };
+              resetIntegration();
+              state.gpsTrack = [];
+            }
+            const gpsLocal = llToLocal(Number(gps.lat), Number(gps.lon), state.origin);
+            state.lastGps = { lat: Number(gps.lat), lon: Number(gps.lon), x: gpsLocal.x, y: gpsLocal.y, fix: Number(gps.fix_type) };
+            state.gpsTrack.push({ x: gpsLocal.x, y: gpsLocal.y });
+            if (state.gpsTrack.length > 600) state.gpsTrack.shift();
+          }
+
+          const dt = state.lastPollTs === null ? 0 : Math.max(0, Math.min(1.0, now - state.lastPollTs));
+          state.lastPollTs = now;
+          const vx = Number(of.speed_x_mps);
+          const vy = Number(of.speed_y_mps);
+          const flowOk = Number(of.flow_ok || 0) === 1 && Number(of.dist_ok || 0) === 1;
+          if (state.origin && flowOk && Number.isFinite(vx) && Number.isFinite(vy) && dt > 0) {
+            state.ofX += vx * state.scale * dt;
+            state.ofY += vy * state.scale * dt;
+            state.ofTrack.push({ x: state.ofX, y: state.ofY });
+            if (state.ofTrack.length > 600) state.ofTrack.shift();
+            state.lastOfLatLon = localToLl(state.ofX, state.ofY, state.origin);
+          }
+
+          if (state.lastGps) {
+            setText("gps-lat", fmt(state.lastGps.lat, 7));
+            setText("gps-lon", fmt(state.lastGps.lon, 7));
+            setText("gps-fix", fmt(state.lastGps.fix, 0));
+            setText("gps-x", fmt(state.lastGps.x, 2));
+            setText("gps-y", fmt(state.lastGps.y, 2));
+          }
+          setText("of-vx", fmt(vx, 3));
+          setText("of-vy", fmt(vy, 3));
+          setText("of-x", fmt(state.ofX, 2));
+          setText("of-y", fmt(state.ofY, 2));
+          setText("of-lat", state.lastOfLatLon ? fmt(state.lastOfLatLon.lat, 7) : "--");
+          setText("of-lon", state.lastOfLatLon ? fmt(state.lastOfLatLon.lon, 7) : "--");
+
+          if (state.lastGps) {
+            const dx = state.ofX - state.lastGps.x;
+            const dy = state.ofY - state.lastGps.y;
+            setText("err-m", `${fmt(Math.hypot(dx, dy), 2)} m`);
+          }
+
+          drawTrack(gpsCtx, gpsCanvas, state.gpsTrack, "#2ea043");
+          drawTrack(ofCtx, ofCanvas, state.ofTrack, "#f78166");
+        } catch (err) {
+          statusEl.textContent = "No data";
+          errorMsgEl.textContent = String(err);
+        }
+      };
+
+      scaleValueEl.textContent = state.scale.toFixed(2);
+      poll();
+      setInterval(poll, 200);
+      window.addEventListener("resize", () => {
+        drawTrack(gpsCtx, gpsCanvas, state.gpsTrack, "#2ea043");
+        drawTrack(ofCtx, ofCanvas, state.ofTrack, "#f78166");
+      });
+    </script>
+  </body>
+</html>

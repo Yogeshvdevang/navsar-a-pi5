@@ -28,6 +28,32 @@ After the program starts, open:
 http://127.0.0.1:8765/gui.html
 ```
 
+### Optical Flow vs GPS Calibration Page
+
+Enable calibration in `config/pixhawk.yaml`:
+
+```yaml
+calibration:
+  enabled: true
+```
+
+Restart NAVISAR, then open:
+
+```
+http://127.0.0.1:8765/calibration.html
+```
+
+From another device on same network:
+
+```
+http://<RASPBERRY_PI_IP>:8765/calibration.html
+```
+
+On this page:
+- Left panel shows real GPS track.
+- Right panel shows Optical Flow converted to GPS track.
+- Use the scale slider to tune optical flow scale live.
+
 The data endpoint used by the GUI is:
 
 ```

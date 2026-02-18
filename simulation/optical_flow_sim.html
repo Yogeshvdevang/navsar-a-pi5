@@ -284,8 +284,8 @@
           </div>
           <div class="pill">
             <label for="rate">Rate</label>
-            <input id="rate" type="range" min="10" max="100" step="5" value="50" />
-            <span id="rateLabel">50 ms</span>
+            <input id="rate" type="range" min="10" max="200" step="5" value="100" />
+            <span id="rateLabel">100 ms</span>
           </div>
           <button id="toggleBtn">Start</button>
           <button id="burstBtn" class="secondary">Burst</button>
@@ -518,6 +518,27 @@
 
         if (history.length < 2) return;
 
+        const firstTime = history[0].timeMs;
+        const latestTime = history[history.length - 1].timeMs;
+        const timeSpan = Math.max(1, latestTime - firstTime);
+        const tickMs = 100;
+        const firstTick = Math.ceil(firstTime / tickMs) * tickMs;
+
+        ctx.strokeStyle = "rgba(255,255,255,0.12)";
+        ctx.lineWidth = 1;
+        ctx.fillStyle = "rgba(255,255,255,0.7)";
+        ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+        for (let t = firstTick; t <= latestTime; t += tickMs) {
+          const x = ((t - firstTime) / timeSpan) * width;
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, height);
+          ctx.stroke();
+          const relMs = latestTime - t;
+          const label = relMs === 0 ? "0ms" : `-${relMs}ms`;
+          ctx.fillText(label, Math.max(0, x - 16), height - 4);
+        }
+
         const distMin = 170;
         const distMax = 210;
         const qMin = 60;
@@ -526,7 +547,7 @@
         ctx.lineWidth = 2;
         ctx.beginPath();
         history.forEach((sample, index) => {
-          const x = (index / (history.length - 1)) * width;
+          const x = ((sample.timeMs - firstTime) / timeSpan) * width;
           const y = height - ((sample.distCm - distMin) / (distMax - distMin)) * height;
           if (index === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
@@ -536,7 +557,7 @@
 
         ctx.beginPath();
         history.forEach((sample, index) => {
-          const x = (index / (history.length - 1)) * width;
+          const x = ((sample.timeMs - firstTime) / timeSpan) * width;
           const y = height - ((sample.flowQ - qMin) / (qMax - qMin)) * height;
           if (index === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);

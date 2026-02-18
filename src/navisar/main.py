@@ -424,6 +424,7 @@ def _make_dashboard_handler(
     allowed_modes,
     allowed_gps_formats,
     pixhawk_config_path,
+    calibration_enabled,
 ):
     class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -432,6 +433,55 @@ def _make_dashboard_handler(
         def do_GET(self):
             if self.path in ("/", "/index.html"):
                 self.path = "/gui.html"
+            if self.path.startswith("/calibration-data"):
+                if not calibration_enabled:
+                    data = json.dumps(
+                        {
+                            "enabled": False,
+                            "error": "Calibration UI is disabled in config/pixhawk.yaml "
+                            "(set calibration.enabled: true).",
+                        }
+                    ).encode("utf-8")
+                    self.send_response(403)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                snap = state.snapshot()
+                sensors = snap.get("sensors", {}) if isinstance(snap, dict) else {}
+                gps_input = sensors.get("gps_input", {}) if isinstance(sensors, dict) else {}
+                optical = sensors.get("optical_flow", {}) if isinstance(sensors, dict) else {}
+                payload = {
+                    "enabled": True,
+                    "timestamp": snap.get("timestamp") if isinstance(snap, dict) else None,
+                    "url": snap.get("url") if isinstance(snap, dict) else None,
+                    "urls": snap.get("urls") if isinstance(snap, dict) else [],
+                    "gps_input": {
+                        "lat": _safe_float(gps_input.get("lat")),
+                        "lon": _safe_float(gps_input.get("lon")),
+                        "alt_m": _safe_float(gps_input.get("alt_m")),
+                        "fix_type": _safe_float(gps_input.get("fix_type")),
+                    },
+                    "optical_flow": {
+                        "speed_x_mps": _safe_float(optical.get("speed_x")),
+                        "speed_y_mps": _safe_float(optical.get("speed_y")),
+                        "dist_mm": _safe_float(optical.get("dist_mm")),
+                        "flow_q": _safe_float(optical.get("flow_q")),
+                        "flow_ok": _safe_float(optical.get("flow_ok")),
+                        "dist_ok": _safe_float(optical.get("dist_ok")),
+                        "ts": optical.get("ts"),
+                    },
+                }
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if self.path.startswith("/data"):
                 payload = state.snapshot()
                 data = json.dumps(payload).encode("utf-8")
@@ -930,6 +980,7 @@ def start_dashboard_server(
     allowed_modes,
     allowed_gps_formats,
     pixhawk_config_path,
+    calibration_enabled,
     open_browser=True,
 ):
     handler = _make_dashboard_handler(
@@ -944,6 +995,7 @@ def start_dashboard_server(
         allowed_modes,
         allowed_gps_formats,
         pixhawk_config_path,
+        calibration_enabled,
     )
     server = http.server.ThreadingHTTPServer((host, port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1282,6 +1334,8 @@ def main():
     dashboard_state = None
     dashboard_server = None
     pixhawk_cfg = configs["pixhawk"]
+    calibration_cfg = pixhawk_cfg.get("calibration", {})
+    calibration_enabled = bool(calibration_cfg.get("enabled", False))
     altitude_offset_m = float(pixhawk_cfg.get("altitude_offset_m", 0.0))
     altitude_offset_state = ModeState(altitude_offset_m)
     use_imu_fusion = pixhawk_cfg.get("use_imu_fusion", True)
@@ -1628,6 +1682,7 @@ def main():
                 allowed_modes,
                 allowed_gps_formats,
                 _repo_root() / "config" / "pixhawk.yaml",
+                calibration_enabled,
                 open_browser=_can_auto_open_browser(),
             )
             server_urls = getattr(dashboard_server, "navisar_urls", None) or [
@@ -1638,6 +1693,7 @@ def main():
                     "status": "running",
                     "url": server_urls[0],
                     "urls": server_urls,
+                    "calibration_enabled": calibration_enabled,
                 }
             )
         except Exception as exc:

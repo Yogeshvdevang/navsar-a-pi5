@@ -99,6 +99,8 @@ vps_gps:
   print: false
   use_compass_yaw: true
   ignore_flags: 28
+calibration:
+  enabled: true
 print_gps_values: false
 print_baro_values: false
 print_sensor_values: true

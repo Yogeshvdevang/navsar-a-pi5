@@ -131,38 +131,6 @@
         cursor: not-allowed;
       }
 
-      .gps-origin-controls {
-        display: grid;
-        gap: 8px;
-      }
-
-      .gps-origin-fields {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 8px;
-      }
-
-      .gps-origin-fields input {
-        width: 100%;
-        background: #000;
-        color: var(--text);
-        border: 1px solid var(--panel-border);
-        border-radius: 8px;
-        padding: 7px 9px;
-        font-size: 12px;
-      }
-
-      .gps-origin-note {
-        font-size: 11px;
-        color: var(--muted);
-      }
-
-      @media (max-width: 980px) {
-        .gps-origin-fields {
-          grid-template-columns: 1fr;
-        }
-      }
-
       .main {
         display: grid;
         grid-template-columns: 1fr;
@@ -415,10 +383,6 @@
         gap: 12px;
       }
 
-      .plot-row .span-2 {
-        grid-column: 1 / -1;
-      }
-
       .card {
         background: var(--panel);
         border: 1px solid var(--panel-border);
@@ -465,19 +429,6 @@
         width: 100%;
         height: 180px;
         display: block;
-      }
-
-      .plot-wrap.tall canvas {
-        height: 240px;
-      }
-
-      .barometer-card {
-        width: min(240px, 100%);
-        justify-self: center;
-      }
-
-      .plot-wrap.baro-portrait canvas {
-        height: 280px;
       }
 
       .traj-wrap canvas {
@@ -542,7 +493,10 @@
         </div>
       </div>
       <div class="access-label">
-        URL: <a id="access-url" href="#" target="_blank" rel="noopener noreferrer">--</a>
+        Phone URL: <a id="access-url" href="#" target="_blank" rel="noopener noreferrer">--</a>
+      </div>
+      <div class="access-label">
+        Start/Stop Control: <a id="control-url" href="#" target="_blank" rel="noopener noreferrer">--</a>
       </div>
       <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">Output Mode</div>
       <div class="mode-buttons" id="mode-buttons">
@@ -562,22 +516,9 @@
       <div class="mode-buttons" id="rw-buttons">
         <button data-action="read">Read</button>
         <button data-action="write">Write</button>
-      </div>
-      <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">GPS Mode</div>
-      <div class="gps-origin-controls">
-        <div class="mode-buttons" id="gps-origin-buttons">
-          <button id="gps-auto-btn" data-mode="auto">AUTO</button>
-          <button id="gps-variable-btn" data-mode="variable">MANUAL INPUT</button>
-        </div>
-        <div class="gps-origin-fields" id="gps-origin-fields">
-          <input id="gps-lat-input" type="text" inputmode="decimal" placeholder="Latitude (e.g. 12.9715987)" />
-          <input id="gps-lon-input" type="text" inputmode="decimal" placeholder="Longitude (e.g. 77.594566)" />
-          <input id="gps-alt-input" type="text" inputmode="decimal" placeholder="Altitude m (optional)" />
-        </div>
-        <div class="gps-origin-note" id="gps-origin-note">
-          AUTO mode: main Write waits up to 10s for healthy GPS, then falls back to variable fields.
-        </div>
-        <div class="gps-origin-note" id="gps-mode-status">Mode status: AUTO selected</div>
+        <button data-action="zero-alt">Auto Zero Altitude</button>
+        <button data-action="start-script">Start Script</button>
+        <button data-action="stop-script">Stop Script</button>
       </div>
 
       <div class="main">
@@ -644,7 +585,6 @@
             <h3>Real-Time Values</h3>
             <div class="kv">
               <div>Height (m)</div><div id="rt-height">--</div>
-              <div>Optical Height (m)</div><div id="rt-of-height">--</div>
               <div>Phase</div><div id="rt-phase">SENSOR_TEST</div>
               <div>VX (m/s)</div><div id="rt-vx">--</div>
               <div>VY (m/s)</div><div id="rt-vy">--</div>
@@ -671,27 +611,21 @@
             </div>
           </div>
           <div class="card">
-            <h3>Integrated Position (m)</h3>
+            <h3>Integrated Position</h3>
             <div class="plot-wrap">
               <canvas id="pos-plot"></canvas>
             </div>
           </div>
           <div class="card">
-            <h3>Control Corrections (m/s)</h3>
+            <h3>Control Corrections</h3>
             <div class="plot-wrap">
               <canvas id="corr-plot"></canvas>
             </div>
           </div>
           <div class="card">
-            <h3>Optical Flow Height (m)</h3>
-            <div class="plot-wrap tall">
-              <canvas id="optical-height-plot"></canvas>
-            </div>
-          </div>
-          <div class="card barometer-card">
-            <h3>Barometer Height (m)</h3>
-            <div class="plot-wrap baro-portrait">
-              <canvas id="barometer-height-plot"></canvas>
+            <h3>Height</h3>
+            <div class="plot-wrap">
+              <canvas id="height-plot"></canvas>
             </div>
           </div>
         </div>
@@ -777,6 +711,13 @@
         }
         el.textContent = url;
         el.setAttribute("href", url);
+
+        const controlEl = document.getElementById("control-url");
+        if (controlEl) {
+          const controlUrl = `${window.location.protocol}//${window.location.hostname}:8770/`;
+          controlEl.textContent = controlUrl;
+          controlEl.setAttribute("href", controlUrl);
+        }
       };
 
       const updateCompassWidget = (prefix, heading) => {
@@ -813,20 +754,15 @@
       // Drone canvas removed in favor of live VO stream.
 
       const plotState = {
-        maxPoints: 1200,
+        maxPoints: 180,
         times: [],
         vx: [],
         vy: [],
         x: [],
         y: [],
-        gpsX: [],
-        gpsY: [],
         height: [],
-        barometerHeight: [],
-        opticalHeight: [],
         corrVx: [],
         corrVy: [],
-        opticalHeightTarget: null,
       };
 
       const filterState = {
@@ -876,57 +812,18 @@
       const corrCtx = corrPlot ? corrPlot.getContext("2d") : null;
       const heightPlot = document.getElementById("height-plot");
       const heightCtx = heightPlot ? heightPlot.getContext("2d") : null;
-      const opticalHeightPlot = document.getElementById("optical-height-plot");
-      const opticalHeightCtx = opticalHeightPlot ? opticalHeightPlot.getContext("2d") : null;
-      const barometerHeightPlot = document.getElementById("barometer-height-plot");
-      const barometerHeightCtx = barometerHeightPlot ? barometerHeightPlot.getContext("2d") : null;
       const voStream = document.getElementById("vo-stream");
       const camSim = document.getElementById("cam-sim");
       const camSimCtx = camSim ? camSim.getContext("2d") : null;
       const streamState = {
-        useSim: true,
+        lastOkMs: 0,
         running: false,
-        mode: "mjpeg",
-        snapshotTimer: null,
-        streamRetryTimer: null,
       };
 
       const setCameraMode = (useSim) => {
         if (!voStream || !camSim) return;
         voStream.style.display = useSim ? "none" : "block";
         camSim.style.display = useSim ? "block" : "none";
-      };
-
-      const stopSnapshotMode = () => {
-        if (streamState.snapshotTimer) {
-          clearInterval(streamState.snapshotTimer);
-          streamState.snapshotTimer = null;
-        }
-      };
-
-      const startSnapshotMode = () => {
-        if (!voStream) return;
-        streamState.mode = "snapshot";
-        stopSnapshotMode();
-        const tickSnapshot = () => {
-          voStream.src = `/frame.jpg?t=${Date.now()}`;
-        };
-        tickSnapshot();
-        streamState.snapshotTimer = setInterval(tickSnapshot, 200);
-        if (!streamState.streamRetryTimer) {
-          streamState.streamRetryTimer = setInterval(() => {
-            if (streamState.mode === "snapshot") {
-              voStream.src = `/video?t=${Date.now()}`;
-            }
-          }, 3000);
-        }
-      };
-
-      const startMjpegMode = () => {
-        if (!voStream) return;
-        streamState.mode = "mjpeg";
-        stopSnapshotMode();
-        voStream.src = "/video";
       };
 
       const fitCamCanvas = () => {
@@ -988,8 +885,9 @@
 
       const cameraLoop = (tMs) => {
         if (!streamState.running) return;
-        setCameraMode(streamState.useSim);
-        if (streamState.useSim) {
+        const stale = Date.now() - streamState.lastOkMs > 1500;
+        setCameraMode(stale);
+        if (stale) {
           drawCamSimulation(tMs);
         }
         requestAnimationFrame(cameraLoop);
@@ -1034,34 +932,6 @@
         }
       };
 
-      const drawYScaleLabels = (ctx, rect, left, top, right, bottom, minVal, maxVal, digits = 3, suffix = "") => {
-        ctx.fillStyle = "#111";
-        ctx.font = "10px sans-serif";
-        ctx.textAlign = "left";
-        const h = rect.height - top - bottom;
-        const span = Math.max(1e-9, maxVal - minVal);
-        for (let i = 0; i <= 4; i += 1) {
-          const v = maxVal - (span / 4) * i;
-          const y = top + (h / 4) * i;
-          ctx.fillText(`${v.toFixed(digits)}${suffix}`, 6, y + 3);
-        }
-      };
-
-      const drawXScaleLabels = (ctx, rect, left, top, right, bottom, minVal, maxVal, digits = 1, suffix = "") => {
-        ctx.fillStyle = "#111";
-        ctx.font = "10px sans-serif";
-        ctx.textAlign = "center";
-        const w = rect.width - left - right;
-        const y = rect.height - 6;
-        const span = Math.max(1e-9, maxVal - minVal);
-        for (let i = 0; i <= 4; i += 1) {
-          const v = minVal + (span / 4) * i;
-          const x = left + (w / 4) * i;
-          ctx.fillText(`${v.toFixed(digits)}${suffix}`, x, y);
-        }
-        ctx.textAlign = "left";
-      };
-
       const drawLineSeries = (ctx, rect, values, color, minVal, maxVal) => {
         if (!values.length) return;
         const padding = 14;
@@ -1103,11 +973,6 @@
         const minVal = Math.min(0, ...vx, ...vy);
         const maxVal = Math.max(0, ...vx, ...vy);
         drawAxes(velCtx, rect, 28);
-        drawYScaleLabels(velCtx, rect, 28, 28, 28, 28, minVal, maxVal, 3, " m/s");
-        const velDurationSec = plotState.times.length > 1
-          ? (plotState.times[plotState.times.length - 1] - plotState.times[0]) / 1000
-          : 1;
-        drawXScaleLabels(velCtx, rect, 28, 28, 28, 28, -velDurationSec, 0, 1, " s");
         drawLineSeries(velCtx, rect, vx, "#1d4ed8", minVal, maxVal);
         drawLineSeries(velCtx, rect, vy, "#dc2626", minVal, maxVal);
         velCtx.fillStyle = "#111";
@@ -1121,9 +986,9 @@
         velCtx.fillRect(rect.width - 68, 28, 14, 4);
         const vxLast = vx[vx.length - 1] ?? 0;
         const vyLast = vy[vy.length - 1] ?? 0;
-        drawStatLabel(velCtx, 8, 14, `vx ${vxLast.toFixed(3)} m/s`, "#1d4ed8");
-        drawStatLabel(velCtx, 8, 34, `vy ${vyLast.toFixed(3)} m/s`, "#dc2626");
-        drawStatLabel(velCtx, 8, rect.height - 12, `min ${minVal.toFixed(3)} m/s max ${maxVal.toFixed(3)} m/s`, "#333");
+        drawStatLabel(velCtx, 8, 14, `vx ${vxLast.toFixed(3)}`, "#1d4ed8");
+        drawStatLabel(velCtx, 8, 34, `vy ${vyLast.toFixed(3)}`, "#dc2626");
+        drawStatLabel(velCtx, 8, rect.height - 12, `min ${minVal.toFixed(3)} max ${maxVal.toFixed(3)}`, "#333");
       };
 
       const drawPosPlot = () => {
@@ -1131,46 +996,20 @@
         if (!rect) return;
         if (plotState.x.length < 2) return;
         const pad = 32;
-        const topPad = 72;
-        const gpsXFinite = plotState.gpsX.filter(Number.isFinite);
-        const gpsYFinite = plotState.gpsY.filter(Number.isFinite);
-        const minX = Math.min(...plotState.x, ...(gpsXFinite.length ? gpsXFinite : [0]));
-        const maxX = Math.max(...plotState.x, ...(gpsXFinite.length ? gpsXFinite : [0]));
-        const minY = Math.min(...plotState.y, ...(gpsYFinite.length ? gpsYFinite : [0]));
-        const maxY = Math.max(...plotState.y, ...(gpsYFinite.length ? gpsYFinite : [0]));
+        const minX = Math.min(...plotState.x);
+        const maxX = Math.max(...plotState.x);
+        const minY = Math.min(...plotState.y);
+        const maxY = Math.max(...plotState.y);
         const spanX = Math.max(Math.abs(minX), Math.abs(maxX));
         const spanY = Math.max(Math.abs(minY), Math.abs(maxY));
         const span = Math.max(spanX, spanY, 0.01);
-        posCtx.strokeStyle = "rgba(0,0,0,0.12)";
-        posCtx.lineWidth = 1;
-        posCtx.strokeRect(pad, topPad, rect.width - pad * 2, rect.height - topPad - pad);
-        for (let i = 1; i <= 4; i += 1) {
-          const x = pad + ((rect.width - pad * 2) / 5) * i;
-          const y = topPad + ((rect.height - topPad - pad) / 5) * i;
-          posCtx.beginPath();
-          posCtx.moveTo(x, topPad);
-          posCtx.lineTo(x, rect.height - pad);
-          posCtx.stroke();
-          posCtx.beginPath();
-          posCtx.moveTo(pad, y);
-          posCtx.lineTo(rect.width - pad, y);
-          posCtx.stroke();
-        }
-        drawYScaleLabels(posCtx, rect, pad, topPad, pad, pad, -span, span, 3, " m");
-        drawXScaleLabels(posCtx, rect, pad, topPad, pad, pad, -span, span, 3, " m");
+        drawAxes(posCtx, rect, pad);
         const pts = plotState.x.map((xv, i) => {
           const yv = plotState.y[i];
           const x = pad + ((xv + span) / (2 * span)) * (rect.width - pad * 2);
-          const y = rect.height - pad - ((yv + span) / (2 * span)) * (rect.height - topPad - pad);
+          const y = rect.height - pad - ((yv + span) / (2 * span)) * (rect.height - pad * 2);
           return { x, y };
         });
-        const gpsPts = plotState.gpsX
-          .map((xv, i) => ({ xv, yv: plotState.gpsY[i] }))
-          .filter((p) => Number.isFinite(p.xv) && Number.isFinite(p.yv))
-          .map((p) => ({
-            x: pad + ((p.xv + span) / (2 * span)) * (rect.width - pad * 2),
-            y: rect.height - pad - ((p.yv + span) / (2 * span)) * (rect.height - topPad - pad),
-          }));
         posCtx.strokeStyle = "rgba(147,51,234,0.6)";
         posCtx.lineWidth = 2.4;
         posCtx.beginPath();
@@ -1182,26 +1021,10 @@
         }
         posCtx.stroke();
 
-        if (gpsPts.length >= 2) {
-          posCtx.strokeStyle = "rgba(37,99,235,0.75)";
-          posCtx.lineWidth = 2.2;
-          posCtx.beginPath();
-          posCtx.moveTo(gpsPts[0].x, gpsPts[0].y);
-          for (let i = 1; i < gpsPts.length; i += 1) {
-            posCtx.lineTo(gpsPts[i].x, gpsPts[i].y);
-          }
-          posCtx.stroke();
-          const gpsLast = gpsPts[gpsPts.length - 1];
-          posCtx.fillStyle = "#2563eb";
-          posCtx.beginPath();
-          posCtx.arc(gpsLast.x, gpsLast.y, 5, 0, Math.PI * 2);
-          posCtx.fill();
-        }
-
         const last = pts[pts.length - 1];
         // origin marker
         const originX = pad + (0.5 * (rect.width - pad * 2));
-        const originY = rect.height - pad - (0.5 * (rect.height - topPad - pad));
+        const originY = rect.height - pad - (0.5 * (rect.height - pad * 2));
         posCtx.fillStyle = "#facc15";
         posCtx.beginPath();
         posCtx.arc(originX, originY, 5, 0, Math.PI * 2);
@@ -1219,40 +1042,20 @@
 
         posCtx.fillStyle = "#111";
         posCtx.font = "11px sans-serif";
-        posCtx.fillText("Trajectory", rect.width - 128, 16);
+        posCtx.fillText("Trajectory", rect.width - 110, 20);
         posCtx.fillStyle = "#9333ea";
-        posCtx.fillRect(rect.width - 148, 8, 14, 4);
+        posCtx.fillRect(rect.width - 130, 12, 14, 4);
         posCtx.fillStyle = "#111";
-        posCtx.fillText("Current", rect.width - 128, 30);
+        posCtx.fillText("Current", rect.width - 110, 36);
         posCtx.fillStyle = "#dc2626";
-        posCtx.fillRect(rect.width - 148, 24, 10, 10);
+        posCtx.fillRect(rect.width - 130, 28, 10, 10);
         posCtx.fillStyle = "#111";
-        posCtx.fillText("Origin", rect.width - 128, 44);
+        posCtx.fillText("Origin", rect.width - 110, 52);
         posCtx.fillStyle = "#facc15";
-        posCtx.fillRect(rect.width - 148, 38, 10, 10);
-        posCtx.fillStyle = "#111";
-        posCtx.fillText("GPS", rect.width - 128, 58);
-        posCtx.fillStyle = "#2563eb";
-        posCtx.fillRect(rect.width - 148, 52, 14, 4);
+        posCtx.fillRect(rect.width - 130, 44, 10, 10);
         const currX = plotState.x[plotState.x.length - 1] ?? 0;
         const currY = plotState.y[plotState.y.length - 1] ?? 0;
-        drawStatLabel(posCtx, 8, 10, `x ${currX.toFixed(3)} m y ${currY.toFixed(3)} m`, "#333");
-        const lastData = window.__lastData || {};
-        const gpsFused = lastData.gps_ll_from_fused || {};
-        const gpsPayload = lastData.outputs?.gps_mavlink?.payload || {};
-        const gpsLat = asFiniteNumber(
-          gpsFused?.lat,
-          gpsPayload?.lat != null ? gpsPayload.lat / 1e7 : null,
-          lastData.gps?.origin?.lat
-        );
-        const gpsLon = asFiniteNumber(
-          gpsFused?.lon,
-          gpsPayload?.lon != null ? gpsPayload.lon / 1e7 : null,
-          lastData.gps?.origin?.lon
-        );
-        if (Number.isFinite(gpsLat) && Number.isFinite(gpsLon)) {
-          drawStatLabel(posCtx, 8, 28, `gps ${gpsLat.toFixed(6)}, ${gpsLon.toFixed(6)}`, "#2563eb");
-        }
+        drawStatLabel(posCtx, 8, 14, `x ${currX.toFixed(3)} y ${currY.toFixed(3)}`, "#333");
       };
 
       const drawCorrPlot = () => {
@@ -1263,11 +1066,6 @@
         const minVal = Math.min(0, ...corrVx, ...corrVy);
         const maxVal = Math.max(0, ...corrVx, ...corrVy);
         drawAxes(corrCtx, rect, 28);
-        drawYScaleLabels(corrCtx, rect, 28, 28, 28, 28, minVal, maxVal, 3, " m/s");
-        const corrDurationSec = plotState.times.length > 1
-          ? (plotState.times[plotState.times.length - 1] - plotState.times[0]) / 1000
-          : 1;
-        drawXScaleLabels(corrCtx, rect, 28, 28, 28, 28, -corrDurationSec, 0, 1, " s");
         drawLineSeries(corrCtx, rect, corrVx, "#16a34a", minVal, maxVal);
         drawLineSeries(corrCtx, rect, corrVy, "#7c3aed", minVal, maxVal);
         corrCtx.fillStyle = "#111";
@@ -1281,8 +1079,8 @@
         corrCtx.fillRect(rect.width - 104, 28, 14, 4);
         const cvx = corrVx[corrVx.length - 1] ?? 0;
         const cvy = corrVy[corrVy.length - 1] ?? 0;
-        drawStatLabel(corrCtx, 8, 14, `corr x ${cvx.toFixed(3)} m/s`, "#16a34a");
-        drawStatLabel(corrCtx, 8, 34, `corr y ${cvy.toFixed(3)} m/s`, "#7c3aed");
+        drawStatLabel(corrCtx, 8, 14, `corr x ${cvx.toFixed(3)}`, "#16a34a");
+        drawStatLabel(corrCtx, 8, 34, `corr y ${cvy.toFixed(3)}`, "#7c3aed");
       };
 
       const drawHeightPlot = () => {
@@ -1301,154 +1099,6 @@
         const hLast = height[height.length - 1] ?? 0;
         drawStatLabel(heightCtx, 8, 14, `h ${hLast.toFixed(3)} m`, "#b45309");
         drawStatLabel(heightCtx, 8, rect.height - 12, `min ${minVal.toFixed(3)} max ${maxVal.toFixed(3)}`, "#333");
-      };
-
-      const drawOpticalHeightPlot = () => {
-        const rect = resizeCanvas(opticalHeightPlot, opticalHeightCtx);
-        if (!rect) return;
-        const values = smoothSeries(plotState.opticalHeight, 7);
-        if (!values.length) return;
-        const target = Number.isFinite(plotState.opticalHeightTarget)
-          ? plotState.opticalHeightTarget
-          : values[values.length - 1];
-        const padLeft = 44;
-        const padRight = 14;
-        const padTop = 24;
-        const padBottom = 28;
-        const chartW = rect.width - padLeft - padRight;
-        const chartH = rect.height - padTop - padBottom;
-        const rawMin = Math.min(...values, target);
-        const rawMax = Math.max(...values, target);
-        const span = Math.max(0.02, rawMax - rawMin);
-        const minVal = Math.max(0, rawMin - span * 0.35);
-        const maxVal = rawMax + span * 0.35;
-        const toY = (v) =>
-          padTop + ((maxVal - v) / Math.max(1e-6, maxVal - minVal)) * chartH;
-
-        opticalHeightCtx.strokeStyle = "rgba(0,0,0,0.14)";
-        opticalHeightCtx.lineWidth = 1;
-        opticalHeightCtx.strokeRect(padLeft, padTop, chartW, chartH);
-        for (let i = 1; i < 5; i += 1) {
-          const x = padLeft + (chartW / 5) * i;
-          const y = padTop + (chartH / 5) * i;
-          opticalHeightCtx.beginPath();
-          opticalHeightCtx.moveTo(x, padTop);
-          opticalHeightCtx.lineTo(x, padTop + chartH);
-          opticalHeightCtx.stroke();
-          opticalHeightCtx.beginPath();
-          opticalHeightCtx.moveTo(padLeft, y);
-          opticalHeightCtx.lineTo(padLeft + chartW, y);
-          opticalHeightCtx.stroke();
-        }
-
-        opticalHeightCtx.fillStyle = "#111";
-        opticalHeightCtx.font = "11px sans-serif";
-        for (let i = 0; i <= 4; i += 1) {
-          const v = maxVal - ((maxVal - minVal) / 4) * i;
-          const y = padTop + (chartH / 4) * i;
-          opticalHeightCtx.fillText(`${v.toFixed(3)} m`, 6, y + 4);
-        }
-        const opticalDurationSec = plotState.times.length > 1
-          ? (plotState.times[plotState.times.length - 1] - plotState.times[0]) / 1000
-          : 1;
-        drawXScaleLabels(opticalHeightCtx, rect, padLeft, padTop, padRight, padBottom, -opticalDurationSec, 0, 1, " s");
-
-        opticalHeightCtx.strokeStyle = "#c9971b";
-        opticalHeightCtx.lineWidth = 2.5;
-        opticalHeightCtx.beginPath();
-        values.forEach((v, i) => {
-          const x = padLeft + (i / (values.length - 1 || 1)) * chartW;
-          const y = toY(v);
-          if (i === 0) {
-            opticalHeightCtx.moveTo(x, y);
-          } else {
-            opticalHeightCtx.lineTo(x, y);
-          }
-        });
-        opticalHeightCtx.stroke();
-
-        opticalHeightCtx.setLineDash([6, 4]);
-        opticalHeightCtx.strokeStyle = "#cf4c45";
-        opticalHeightCtx.lineWidth = 1.8;
-        opticalHeightCtx.beginPath();
-        opticalHeightCtx.moveTo(padLeft, toY(target));
-        opticalHeightCtx.lineTo(padLeft + chartW, toY(target));
-        opticalHeightCtx.stroke();
-        opticalHeightCtx.setLineDash([]);
-
-        opticalHeightCtx.fillStyle = "#111";
-        opticalHeightCtx.font = "bold 15px sans-serif";
-        opticalHeightCtx.textAlign = "center";
-        opticalHeightCtx.fillText("Height", rect.width / 2, 18);
-
-        opticalHeightCtx.textAlign = "left";
-        opticalHeightCtx.font = "11px sans-serif";
-        opticalHeightCtx.strokeStyle = "#c9971b";
-        opticalHeightCtx.lineWidth = 2.5;
-        opticalHeightCtx.beginPath();
-        opticalHeightCtx.moveTo(rect.width - 134, 22);
-        opticalHeightCtx.lineTo(rect.width - 114, 22);
-        opticalHeightCtx.stroke();
-        opticalHeightCtx.fillStyle = "#111";
-        opticalHeightCtx.fillText("Height (m)", rect.width - 108, 25);
-        opticalHeightCtx.setLineDash([6, 4]);
-        opticalHeightCtx.strokeStyle = "#cf4c45";
-        opticalHeightCtx.lineWidth = 1.8;
-        opticalHeightCtx.beginPath();
-        opticalHeightCtx.moveTo(rect.width - 134, 38);
-        opticalHeightCtx.lineTo(rect.width - 114, 38);
-        opticalHeightCtx.stroke();
-        opticalHeightCtx.setLineDash([]);
-        opticalHeightCtx.fillText("Target (m)", rect.width - 108, 41);
-      };
-
-      const drawBarometerHeightBar = () => {
-        const rect = resizeCanvas(barometerHeightPlot, barometerHeightCtx);
-        if (!rect) return;
-        const value = plotState.barometerHeight[plotState.barometerHeight.length - 1] ?? 0;
-        const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
-        const maxHist = Math.max(0, ...plotState.barometerHeight.filter(Number.isFinite));
-        const maxVal = Math.max(0.1, maxHist * 1.15, safeValue * 1.15);
-        const padLeft = 44;
-        const padRight = 16;
-        const padTop = 20;
-        const padBottom = 34;
-        const chartW = rect.width - padLeft - padRight;
-        const chartH = rect.height - padTop - padBottom;
-
-        barometerHeightCtx.strokeStyle = "rgba(0,0,0,0.14)";
-        barometerHeightCtx.lineWidth = 1;
-        barometerHeightCtx.strokeRect(padLeft, padTop, chartW, chartH);
-        for (let i = 1; i < 5; i += 1) {
-          const y = padTop + (chartH / 5) * i;
-          barometerHeightCtx.beginPath();
-          barometerHeightCtx.moveTo(padLeft, y);
-          barometerHeightCtx.lineTo(padLeft + chartW, y);
-          barometerHeightCtx.stroke();
-        }
-
-        barometerHeightCtx.fillStyle = "#111";
-        barometerHeightCtx.font = "11px sans-serif";
-        for (let i = 0; i <= 4; i += 1) {
-          const v = maxVal - (maxVal / 4) * i;
-          const y = padTop + (chartH / 4) * i;
-          barometerHeightCtx.fillText(`${v.toFixed(3)} m`, 6, y + 4);
-        }
-
-        const barW = Math.min(26, chartW * 0.18);
-        const barX = padLeft + (chartW - barW) / 2;
-        const barH = (safeValue / Math.max(1e-6, maxVal)) * chartH;
-        const barY = padTop + chartH - barH;
-        barometerHeightCtx.fillStyle = "#16a34a";
-        barometerHeightCtx.fillRect(barX, barY, barW, Math.max(2, barH));
-
-        barometerHeightCtx.fillStyle = "#111";
-        barometerHeightCtx.textAlign = "center";
-        barometerHeightCtx.font = "bold 12px sans-serif";
-        barometerHeightCtx.fillText(`${safeValue.toFixed(3)} m`, rect.width / 2, Math.max(14, barY - 8));
-        barometerHeightCtx.font = "11px sans-serif";
-        barometerHeightCtx.fillText("Barometer", rect.width / 2, rect.height - 10);
-        barometerHeightCtx.textAlign = "left";
       };
 
       // Removed 3D trajectory + motion drawing for this layout.
@@ -1475,7 +1125,7 @@
           const optRaw = data.sensors?.optical_flow || {};
           const optOut = data.outputs?.optical_flow_mavlink || {};
           const opt = (() => {
-            if (optRaw && (optRaw.dist_cm != null || optRaw.distance_mm != null || optRaw.dist_mm != null)) {
+            if (optRaw && (optRaw.dist_cm != null || optRaw.distance_mm != null)) {
               return optRaw;
             }
             if (optOut && optOut.distance_m != null) {
@@ -1493,15 +1143,7 @@
             }
             return optRaw;
           })();
-          const opticalDistCmRaw = asFiniteNumber(
-            opt?.dist_cm,
-            opt?.distance_mm != null ? opt.distance_mm / 10 : null,
-            opt?.dist_mm != null ? opt.dist_mm / 10 : null
-          );
-          const opticalDistCm = Number.isFinite(opticalDistCmRaw) && opticalDistCmRaw > 0
-            ? opticalDistCmRaw
-            : null;
-          setText("of-dist", opticalDistCm, 1);
+          setText("of-dist", opt?.dist_cm ?? opt?.distance_mm ? (opt.distance_mm / 10) : null, 1);
           setText("of-vx", opt?.flow_vx, 0);
           setText("of-vy", opt?.flow_vy, 0);
           setText("of-q", opt?.flow_q, 0);
@@ -1514,17 +1156,14 @@
             ? asFiniteNumber(opt?.speed_y, opt?.flow_vy, 0) || 0
             : asFiniteNumber(data.camera?.vy, 0) || 0;
           const opticalHeightM = asFiniteNumber(
-            opt?.height_m,
-            optOut?.distance_m,
-            opt?.dist_mm != null ? opt.dist_mm / 1000 : null,
             opt?.distance_mm != null ? opt.distance_mm / 1000 : null,
             opt?.dist_cm != null ? opt.dist_cm / 100 : null
-          ) ?? 0;
+          );
           const rawAltitude =
             asFiniteNumber(
-              opticalHeightM,
               data.sensors?.barometer?.height_m,
               data.fused?.z,
+              opticalHeightM,
               data.camera?.z,
               data.gps?.local?.z
             ) ?? 0;
@@ -1539,8 +1178,6 @@
           const vx = filterSignal(filterState.vx, rawVx, 0.18, isOptical ? 0.02 : 0.005, isOptical ? 0.25 : 0.08);
           const vy = filterSignal(filterState.vy, rawVy, 0.18, isOptical ? 0.02 : 0.005, isOptical ? 0.25 : 0.08);
           const altitude = filterSignal(filterState.height, rawAltitude, 0.22, 0.0, 0.08);
-          // Use optical sensor meters directly for all height graphs (no smoothing/offset/fallback in graph data).
-          const sharedHeightForPlots = opticalHeightM;
           filterState.vx = vx;
           filterState.vy = vy;
           filterState.height = altitude;
@@ -1668,7 +1305,6 @@
           setText("nav-hdg", heading, 1);
 
           setText("rt-height", altitude, 3);
-          setText("rt-of-height", opticalHeightM, 3);
           setText("rt-vx", vx, 3);
           setText("rt-vy", vy, 3);
           let posX = 0;
@@ -1714,16 +1350,7 @@
           pushSeries(plotState.vy, vy);
           pushSeries(plotState.x, posX);
           pushSeries(plotState.y, posY);
-          const gpsLocalX = asFiniteNumber(data.gps?.local?.x);
-          const gpsLocalY = asFiniteNumber(data.gps?.local?.y);
-          pushSeries(plotState.gpsX, Number.isFinite(gpsLocalX) ? gpsLocalX : NaN);
-          pushSeries(plotState.gpsY, Number.isFinite(gpsLocalY) ? gpsLocalY : NaN);
-          pushSeries(plotState.height, sharedHeightForPlots);
-          pushSeries(plotState.barometerHeight, sharedHeightForPlots);
-          pushSeries(plotState.opticalHeight, sharedHeightForPlots);
-          if (!Number.isFinite(plotState.opticalHeightTarget) && Number.isFinite(sharedHeightForPlots)) {
-            plotState.opticalHeightTarget = sharedHeightForPlots;
-          }
+          pushSeries(plotState.height, altitude);
           pushSeries(plotState.corrVx, 0);
           pushSeries(plotState.corrVy, 0);
 
@@ -1731,8 +1358,6 @@
           drawPosPlot();
           drawCorrPlot();
           drawHeightPlot();
-          drawOpticalHeightPlot();
-          drawBarometerHeightBar();
           updateCompassWidget("real", realCompassHeading);
           updateCompassWidget("vo", voCompassHeading);
           updateCompassWidget("opt", opticalCompassHeading);
@@ -1746,172 +1371,6 @@
       const modeButtons = Array.from(document.querySelectorAll("#mode-buttons button"));
       const gpsFormatButtons = Array.from(document.querySelectorAll("#gps-format-buttons button"));
       const rwButtons = Array.from(document.querySelectorAll("#rw-buttons button"));
-      const gpsAutoBtn = document.getElementById("gps-auto-btn");
-      const gpsVariableBtn = document.getElementById("gps-variable-btn");
-      const gpsOriginFields = document.getElementById("gps-origin-fields");
-      const gpsOriginNote = document.getElementById("gps-origin-note");
-      const gpsModeStatus = document.getElementById("gps-mode-status");
-      const gpsLatInput = document.getElementById("gps-lat-input");
-      const gpsLonInput = document.getElementById("gps-lon-input");
-      const gpsAltInput = document.getElementById("gps-alt-input");
-      const gpsOriginMode = { value: "auto" };
-
-      const setGpsModeStatus = (text) => {
-        if (gpsModeStatus) gpsModeStatus.textContent = `Mode status: ${text}`;
-      };
-
-      const appendLog = (text) => {
-        const logEl = document.getElementById("output-log");
-        if (!logEl) return;
-        const nowStr = new Date().toLocaleTimeString();
-        logState.lines.push(`[${nowStr}] ${text}`);
-        if (logState.lines.length > logState.max) {
-          logState.lines.splice(0, logState.lines.length - logState.max);
-        }
-        logEl.textContent = logState.lines.join("\n");
-      };
-
-      const updateGpsOriginUi = () => {
-        const isAuto = gpsOriginMode.value === "auto";
-        const isVariable = gpsOriginMode.value === "variable";
-        if (gpsAutoBtn) gpsAutoBtn.classList.toggle("active", isAuto);
-        if (gpsVariableBtn) gpsVariableBtn.classList.toggle("active", isVariable);
-        if (gpsOriginFields) gpsOriginFields.style.display = "grid";
-        if (gpsOriginNote) {
-          gpsOriginNote.textContent = isVariable
-            ? "VARIABLE mode: main Write uses only variable fields."
-            : "AUTO mode: main Write waits up to 10s for healthy GPS, then falls back to variable fields.";
-        }
-        setGpsModeStatus(isVariable ? "VARIABLE selected" : "AUTO selected");
-      };
-
-      const handleSelectAuto = () => {
-        gpsOriginMode.value = "auto";
-        updateGpsOriginUi();
-        setGpsModeStatus("AUTO selected");
-      };
-
-      const handleSelectVariable = () => {
-        gpsOriginMode.value = "variable";
-        updateGpsOriginUi();
-        if (gpsLatInput) gpsLatInput.focus();
-        setGpsModeStatus("VARIABLE selected");
-      };
-
-      const refreshGpsOriginState = async () => {
-        try {
-          const res = await fetch("/gps-origin", { cache: "no-store" });
-          const payload = await res.json();
-          const origin = payload?.origin || {};
-          const liveFix = payload?.gps_input || {};
-          const latForUi = Number.isFinite(Number(origin.lat)) ? Number(origin.lat) : Number(liveFix.lat);
-          const lonForUi = Number.isFinite(Number(origin.lon)) ? Number(origin.lon) : Number(liveFix.lon);
-          const altForUi = Number.isFinite(Number(origin.alt_m)) ? Number(origin.alt_m) : Number(liveFix.alt_m);
-          if (gpsLatInput && (gpsLatInput.value === "" || gpsOriginMode.value !== "variable")) {
-            if (Number.isFinite(latForUi)) gpsLatInput.value = latForUi.toFixed(7);
-          }
-          if (gpsLonInput && (gpsLonInput.value === "" || gpsOriginMode.value !== "variable")) {
-            if (Number.isFinite(lonForUi)) gpsLonInput.value = lonForUi.toFixed(7);
-          }
-          if (gpsAltInput && gpsAltInput.value === "") {
-            if (Number.isFinite(altForUi)) gpsAltInput.value = altForUi.toFixed(2);
-          }
-        } catch (_) {
-          // ignore
-        }
-      };
-
-      const isHealthyGpsFix = (fix) => {
-        const lat = Number(fix?.lat);
-        const lon = Number(fix?.lon);
-        const fixType = Number(fix?.fix_type);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
-        if (Number.isFinite(fixType) && fixType < 3) return false;
-        return true;
-      };
-
-      const writeVariableOriginFromFields = async () => {
-        const latRaw = gpsLatInput ? gpsLatInput.value.trim() : "";
-        const lonRaw = gpsLonInput ? gpsLonInput.value.trim() : "";
-        const altRaw = gpsAltInput ? gpsAltInput.value.trim() : "";
-        const lat = Number(latRaw);
-        const lon = Number(lonRaw);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-          setGpsModeStatus("VARIABLE failed: invalid lat/lon");
-          appendLog("main write gps failed: variable lat/lon invalid");
-          return false;
-        }
-        const writePayload = await writeOriginByPayload({
-          mode: "variable",
-          lat: latRaw,
-          lon: lonRaw,
-          alt_m: altRaw,
-        });
-        if (writePayload?.ok) {
-          setGpsModeStatus("Variable data used");
-          appendLog(
-            `main write gps source=variable lat=${lat.toFixed(7)} lon=${lon.toFixed(7)}`
-          );
-          await refreshGpsOriginState();
-          return true;
-        }
-        setGpsModeStatus("VARIABLE failed: write failed");
-        appendLog(`main write gps failed: ${writePayload?.error || "unknown error"}`);
-        return false;
-      };
-
-      const fetchGpsOriginPayload = async () => {
-        const res = await fetch("/gps-origin", { cache: "no-store" });
-        return res.json();
-      };
-
-      const writeOriginByPayload = async (body) => {
-        const res = await fetch("/gps-origin", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        return res.json();
-      };
-
-      const writeGpsOriginFromMainWrite = async () => {
-        if (gpsOriginMode.value === "variable") {
-          return writeVariableOriginFromFields();
-        }
-        setGpsModeStatus("AUTO working: waiting up to 10s for healthy GPS");
-        const deadline = Date.now() + 10000;
-        while (Date.now() < deadline) {
-          try {
-            const payload = await fetchGpsOriginPayload();
-            const fix = payload?.gps_input || {};
-            if (isHealthyGpsFix(fix)) {
-              const lat = Number(fix.lat);
-              const lon = Number(fix.lon);
-              const altVal = Number(fix.alt_m);
-              const writePayload = await writeOriginByPayload({
-                mode: "initial_home",
-                lat,
-                lon,
-                alt_m: Number.isFinite(altVal) ? altVal : "",
-              });
-              if (writePayload?.ok) {
-                setGpsModeStatus("AUTO used sensor GPS");
-                appendLog(
-                  `main write gps source=sensor lat=${lat.toFixed(7)} lon=${lon.toFixed(7)}`
-                );
-                await refreshGpsOriginState();
-                return true;
-              }
-            }
-          } catch (_) {
-            // keep trying until timeout
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
-        setGpsModeStatus("AUTO fallback: using variable data");
-        return writeVariableOriginFromFields();
-      };
-
       const setMode = async (mode) => {
         try {
           await fetch("/mode", {
@@ -1976,10 +1435,6 @@
       const handleWrite = () => {
         (async () => {
           try {
-            const originOk = await writeGpsOriginFromMainWrite();
-            if (!originOk) {
-              return;
-            }
             const res = await fetch("/persist", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -2053,6 +1508,44 @@
           }
         }
       };
+      const handleServiceAction = async (action) => {
+        const controlUrl = `${window.location.protocol}//${window.location.hostname}:8770/service`;
+        try {
+          const res = await fetch(controlUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action }),
+          });
+          const payload = await res.json();
+          const nowStr = new Date().toLocaleTimeString();
+          const logEl = document.getElementById("output-log");
+          if (logEl) {
+            if (payload?.ok) {
+              logState.lines.push(
+                `[${nowStr}] service ${action} ok (${payload?.service || "navisar.service"})`
+              );
+            } else {
+              logState.lines.push(
+                `[${nowStr}] service ${action} failed: ${payload?.message || payload?.error || "unknown error"}`
+              );
+            }
+            if (logState.lines.length > logState.max) {
+              logState.lines.splice(0, logState.lines.length - logState.max);
+            }
+            logEl.textContent = logState.lines.join("\n");
+          }
+        } catch (_) {
+          const logEl = document.getElementById("output-log");
+          if (logEl) {
+            const nowStr = new Date().toLocaleTimeString();
+            logState.lines.push(`[${nowStr}] service ${action} failed: request error`);
+            if (logState.lines.length > logState.max) {
+              logState.lines.splice(0, logState.lines.length - logState.max);
+            }
+            logEl.textContent = logState.lines.join("\n");
+          }
+        }
+      };
       modeButtons.forEach((btn) => {
         btn.addEventListener("click", () => {
           setMode(btn.dataset.mode);
@@ -2069,19 +1562,15 @@
             handleRead();
           } else if (btn.dataset.action === "write") {
             handleWrite();
+          } else if (btn.dataset.action === "zero-alt") {
+            handleAutoZeroAltitude();
+          } else if (btn.dataset.action === "start-script") {
+            handleServiceAction("start");
+          } else if (btn.dataset.action === "stop-script") {
+            handleServiceAction("stop");
           }
         });
       });
-      if (gpsAutoBtn) {
-        gpsAutoBtn.addEventListener("click", () => {
-          handleSelectAuto();
-        });
-      }
-      if (gpsVariableBtn) {
-        gpsVariableBtn.addEventListener("click", () => {
-          handleSelectVariable();
-        });
-      }
 
       const updateModeButtons = (mode, allowed = null) => {
         modeButtons.forEach((btn) => {
@@ -2122,65 +1611,38 @@
       tick();
       refreshModeState();
       refreshGpsFormatState();
-      updateGpsOriginUi();
-      refreshGpsOriginState();
       if (voStream) {
-        streamState.useSim = true;
-        setCameraMode(true);
-        startMjpegMode();
-        voStream.addEventListener("load", () => {
-          streamState.useSim = false;
+        const markStreamOk = () => {
+          streamState.lastOkMs = Date.now();
           setCameraMode(false);
-          if (streamState.mode === "snapshot" && voStream.currentSrc.includes("/video")) {
-            streamState.mode = "mjpeg";
-            stopSnapshotMode();
-          }
-        });
+        };
+        voStream.addEventListener("load", markStreamOk);
         voStream.addEventListener("error", () => {
-          if (streamState.mode === "mjpeg") {
-            startSnapshotMode();
-          } else {
-            streamState.useSim = true;
-            setCameraMode(true);
-          }
+          streamState.lastOkMs = 0;
+          setCameraMode(true);
         });
-        voStream.addEventListener("abort", () => {
-          if (streamState.mode === "mjpeg") {
-            startSnapshotMode();
-          } else {
-            streamState.useSim = true;
-            setCameraMode(true);
-          }
-        });
+        markStreamOk();
       }
       streamState.running = true;
       requestAnimationFrame(cameraLoop);
-      let tickInFlight = false;
-      const fastTick = async () => {
-        if (tickInFlight) return;
-        tickInFlight = true;
-        try {
-          await tick();
+      // Default to optical-flow GPS when GUI opens.
+      setMode("optical_flow_gps_port");
+      setInterval(() => {
+        tick().then(() => {
           const modeEl = document.getElementById("mode");
           if (modeEl) updateModeButtons(modeEl.textContent.trim());
           const gpsFormat = (window.__lastData && window.__lastData.gps_output_format) || null;
           if (gpsFormat) updateGpsFormatButtons(gpsFormat);
-        } finally {
-          tickInFlight = false;
-        }
-      };
-      setInterval(fastTick, 100);
+        });
+      }, 250);
       setInterval(refreshModeState, 2000);
       setInterval(refreshGpsFormatState, 2000);
-      setInterval(refreshGpsOriginState, 2000);
       window.addEventListener("resize", () => {
         fitCamCanvas();
         drawVelPlot();
         drawPosPlot();
         drawCorrPlot();
         drawHeightPlot();
-        drawOpticalHeightPlot();
-        drawBarometerHeightBar();
       });
     </script>
   </body>
