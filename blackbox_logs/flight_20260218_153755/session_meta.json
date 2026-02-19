@@ -1,0 +1,10 @@
+{
+  "data_file": "/home/psyc2/NAVSAR-A/blackbox_logs/flight_20260218_153755/flight_data.txt",
+  "data_points": 8,
+  "frames": 8,
+  "recording": false,
+  "session_id": "flight_20260218_153755",
+  "started_at": 1771409275.3993523,
+  "stopped_at": 1771409277.2576005,
+  "video_file": "/home/psyc2/NAVSAR-A/blackbox_logs/flight_20260218_153755/flight_video.mjpg"
+}

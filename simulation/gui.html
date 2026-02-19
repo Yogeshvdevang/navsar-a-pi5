@@ -838,6 +838,8 @@
         gpsY: [],
         height: [],
         barometerHeight: [],
+        gpsSensorHeight: [],
+        gpsPortFinalHeight: [],
         opticalHeight: [],
         corrVx: [],
         corrVy: [],
@@ -1515,13 +1517,27 @@
       const drawBarometerHeightBar = () => {
         const rect = resizeCanvas(barometerHeightPlot, barometerHeightCtx);
         if (!rect) return;
-        const value = plotState.barometerHeight[plotState.barometerHeight.length - 1] ?? 0;
-        const safeValue = Number.isFinite(value) ? value : 0;
-        const [minVal, maxVal] = autoRange([plotState.barometerHeight, [safeValue]], {
+        const baroValue = plotState.barometerHeight[plotState.barometerHeight.length - 1] ?? 0;
+        const gpsValue = plotState.gpsSensorHeight[plotState.gpsSensorHeight.length - 1] ?? NaN;
+        const gpsPortValue = plotState.gpsPortFinalHeight[plotState.gpsPortFinalHeight.length - 1] ?? NaN;
+        const safeBaroValue = Number.isFinite(baroValue) ? baroValue : 0;
+        const safeGpsValue = Number.isFinite(gpsValue) ? gpsValue : safeBaroValue;
+        const safeGpsPortValue = Number.isFinite(gpsPortValue) ? gpsPortValue : safeBaroValue;
+        const [minVal, maxVal] = autoRange(
+          [
+            plotState.barometerHeight,
+            plotState.gpsSensorHeight,
+            plotState.gpsPortFinalHeight,
+            [safeBaroValue],
+            [safeGpsValue],
+            [safeGpsPortValue],
+          ],
+          {
           minSpan: 0.05,
           padRatio: 0.15,
           padMin: 0.05,
-        });
+          }
+        );
         const padLeft = 44;
         const padRight = 16;
         const padTop = 20;
@@ -1548,20 +1564,43 @@
           barometerHeightCtx.fillText(`${v.toFixed(3)} m`, 6, y + 4);
         }
 
-        const barW = Math.min(26, chartW * 0.18);
-        const barX = padLeft + (chartW - barW) / 2;
-        const barRatio = (safeValue - minVal) / Math.max(1e-6, maxVal - minVal);
-        const barH = clamp(barRatio * chartH, 0, chartH);
-        const barY = clamp(padTop + chartH - barH, padTop, padTop + chartH);
+        const barW = Math.min(18, chartW * 0.12);
+        const gapW = Math.max(10, barW * 0.8);
+        const groupW = barW * 3 + gapW * 2;
+        const baroX = padLeft + (chartW - groupW) / 2;
+        const gpsX = baroX + barW + gapW;
+        const gpsPortX = gpsX + barW + gapW;
+        const baroRatio = (safeBaroValue - minVal) / Math.max(1e-6, maxVal - minVal);
+        const gpsRatio = (safeGpsValue - minVal) / Math.max(1e-6, maxVal - minVal);
+        const gpsPortRatio = (safeGpsPortValue - minVal) / Math.max(1e-6, maxVal - minVal);
+        const baroH = clamp(baroRatio * chartH, 0, chartH);
+        const gpsH = clamp(gpsRatio * chartH, 0, chartH);
+        const gpsPortH = clamp(gpsPortRatio * chartH, 0, chartH);
+        const baroY = clamp(padTop + chartH - baroH, padTop, padTop + chartH);
+        const gpsY = clamp(padTop + chartH - gpsH, padTop, padTop + chartH);
+        const gpsPortY = clamp(padTop + chartH - gpsPortH, padTop, padTop + chartH);
+
         barometerHeightCtx.fillStyle = "#16a34a";
-        barometerHeightCtx.fillRect(barX, barY, barW, Math.max(2, barH));
+        barometerHeightCtx.fillRect(baroX, baroY, barW, Math.max(2, baroH));
+        barometerHeightCtx.fillStyle = "#2563eb";
+        barometerHeightCtx.fillRect(gpsX, gpsY, barW, Math.max(2, gpsH));
+        barometerHeightCtx.fillStyle = "#f59e0b";
+        barometerHeightCtx.fillRect(gpsPortX, gpsPortY, barW, Math.max(2, gpsPortH));
 
         barometerHeightCtx.fillStyle = "#111";
         barometerHeightCtx.textAlign = "center";
         barometerHeightCtx.font = "bold 12px sans-serif";
-        barometerHeightCtx.fillText(`${safeValue.toFixed(3)} m`, rect.width / 2, Math.max(14, barY - 8));
+        barometerHeightCtx.fillText(
+          `B ${safeBaroValue.toFixed(3)} m | G ${safeGpsValue.toFixed(3)} m | P ${safeGpsPortValue.toFixed(3)} m`,
+          rect.width / 2,
+          Math.max(14, Math.min(baroY, gpsY, gpsPortY) - 8)
+        );
         barometerHeightCtx.font = "11px sans-serif";
-        barometerHeightCtx.fillText("Barometer", rect.width / 2, rect.height - 10);
+        barometerHeightCtx.fillText(
+          "Barometer (green)  GPS sensor (blue)  GPS port final (amber)",
+          rect.width / 2,
+          rect.height - 10
+        );
         barometerHeightCtx.textAlign = "left";
       };
 
@@ -1647,6 +1686,16 @@
             opt?.distance_mm != null ? opt.distance_mm / 1000 : null,
             opt?.dist_cm != null ? opt.dist_cm / 100 : null
           ) ?? 0;
+          const barometerHeightM = asFiniteNumber(
+            data.sensors?.barometer?.height_m,
+            data.sensors?.barometer?.raw_alt_m
+          );
+          const gpsSensorAltitudeM = asFiniteNumber(
+            data.sensors?.gps_input?.alt_m
+          );
+          const gpsPortFinalAltitudeM = asFiniteNumber(
+            data.outputs?.gps_port?.alt_m
+          );
           const rawAltitude =
             asFiniteNumber(
               opticalHeightM,
@@ -1668,6 +1717,15 @@
           const altitude = filterSignal(filterState.height, rawAltitude, 0.22, 0.0, 0.08);
           // Use optical sensor meters directly for all height graphs (no smoothing/offset/fallback in graph data).
           const sharedHeightForPlots = opticalHeightM;
+          const barometerHeightForPlot = Number.isFinite(barometerHeightM)
+            ? barometerHeightM
+            : (plotState.barometerHeight[plotState.barometerHeight.length - 1] ?? NaN);
+          const gpsSensorHeightForPlot = Number.isFinite(gpsSensorAltitudeM)
+            ? gpsSensorAltitudeM
+            : (plotState.gpsSensorHeight[plotState.gpsSensorHeight.length - 1] ?? NaN);
+          const gpsPortFinalHeightForPlot = Number.isFinite(gpsPortFinalAltitudeM)
+            ? gpsPortFinalAltitudeM
+            : (plotState.gpsPortFinalHeight[plotState.gpsPortFinalHeight.length - 1] ?? NaN);
           filterState.vx = vx;
           filterState.vy = vy;
           filterState.height = altitude;
@@ -1846,7 +1904,9 @@
           pushSeries(plotState.gpsX, Number.isFinite(gpsLocalX) ? gpsLocalX : NaN);
           pushSeries(plotState.gpsY, Number.isFinite(gpsLocalY) ? gpsLocalY : NaN);
           pushSeries(plotState.height, sharedHeightForPlots);
-          pushSeries(plotState.barometerHeight, sharedHeightForPlots);
+          pushSeries(plotState.barometerHeight, barometerHeightForPlot);
+          pushSeries(plotState.gpsSensorHeight, gpsSensorHeightForPlot);
+          pushSeries(plotState.gpsPortFinalHeight, gpsPortFinalHeightForPlot);
           pushSeries(plotState.opticalHeight, sharedHeightForPlots);
           if (!Number.isFinite(plotState.opticalHeightTarget) && Number.isFinite(sharedHeightForPlots)) {
             plotState.opticalHeightTarget = sharedHeightForPlots;
