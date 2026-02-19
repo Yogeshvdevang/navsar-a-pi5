@@ -27,12 +27,14 @@ class GpsPortMode:
         nmea_emitter,
         ubx_emitter,
         print_enabled,
+        final_altitude_offset_m=0.0,
         warn_interval_s=2.0,
     ):
         self.emitter = emitter
         self.nmea_emitter = nmea_emitter
         self.ubx_emitter = ubx_emitter
         self.print_enabled = bool(print_enabled)
+        self.final_altitude_offset_m = float(final_altitude_offset_m)
         self.warn_interval_s = float(warn_interval_s)
         self._last_warn = 0.0
         self._vel_tracker = EnuVelocityTracker()
@@ -70,7 +72,7 @@ class GpsPortMode:
             self._warn(now, "GPS->PORT: barometer altitude unavailable; skipping send.")
             return
         alt_base = 0.0 if origin[2] is None else float(origin[2])
-        alt_m = alt_base + float(alt_override_m)
+        alt_m = alt_base + float(alt_override_m) + self.final_altitude_offset_m
         if abs(alt_m) < 1e-3:
             alt_m = 0.0
         if not (_finite(lat) and _finite(lon) and _finite(alt_m)):

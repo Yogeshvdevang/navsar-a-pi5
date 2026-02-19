@@ -473,7 +473,7 @@
       }
 
       .barometer-card {
-        width: min(240px, 100%);
+        width: min(560px, 100%);
         justify-self: center;
       }
 
@@ -840,6 +840,7 @@
         barometerHeight: [],
         gpsSensorHeight: [],
         gpsPortFinalHeight: [],
+        finalAltitudeOffsetM: null,
         opticalHeight: [],
         corrVx: [],
         corrVy: [],
@@ -1520,6 +1521,9 @@
         const baroValue = plotState.barometerHeight[plotState.barometerHeight.length - 1] ?? 0;
         const gpsValue = plotState.gpsSensorHeight[plotState.gpsSensorHeight.length - 1] ?? NaN;
         const gpsPortValue = plotState.gpsPortFinalHeight[plotState.gpsPortFinalHeight.length - 1] ?? NaN;
+        const offsetValue = Number.isFinite(plotState.finalAltitudeOffsetM)
+          ? plotState.finalAltitudeOffsetM
+          : NaN;
         const safeBaroValue = Number.isFinite(baroValue) ? baroValue : 0;
         const safeGpsValue = Number.isFinite(gpsValue) ? gpsValue : safeBaroValue;
         const safeGpsPortValue = Number.isFinite(gpsPortValue) ? gpsPortValue : safeBaroValue;
@@ -1528,6 +1532,7 @@
             plotState.barometerHeight,
             plotState.gpsSensorHeight,
             plotState.gpsPortFinalHeight,
+            [offsetValue],
             [safeBaroValue],
             [safeGpsValue],
             [safeGpsPortValue],
@@ -1584,8 +1589,23 @@
         barometerHeightCtx.fillRect(baroX, baroY, barW, Math.max(2, baroH));
         barometerHeightCtx.fillStyle = "#2563eb";
         barometerHeightCtx.fillRect(gpsX, gpsY, barW, Math.max(2, gpsH));
-        barometerHeightCtx.fillStyle = "#f59e0b";
+        barometerHeightCtx.fillStyle = "#facc15";
         barometerHeightCtx.fillRect(gpsPortX, gpsPortY, barW, Math.max(2, gpsPortH));
+
+        if (Number.isFinite(offsetValue)) {
+          const offsetRatio = (offsetValue - minVal) / Math.max(1e-6, maxVal - minVal);
+          const offsetY = clamp(padTop + chartH - offsetRatio * chartH, padTop, padTop + chartH);
+          barometerHeightCtx.strokeStyle = "#dc2626";
+          barometerHeightCtx.lineWidth = 2;
+          barometerHeightCtx.beginPath();
+          barometerHeightCtx.moveTo(padLeft, offsetY);
+          barometerHeightCtx.lineTo(padLeft + chartW, offsetY);
+          barometerHeightCtx.stroke();
+          barometerHeightCtx.fillStyle = "#dc2626";
+          barometerHeightCtx.textAlign = "right";
+          barometerHeightCtx.font = "11px sans-serif";
+          barometerHeightCtx.fillText(`Offset ${offsetValue.toFixed(3)} m`, padLeft + chartW - 4, offsetY - 4);
+        }
 
         barometerHeightCtx.fillStyle = "#111";
         barometerHeightCtx.textAlign = "center";
@@ -1597,7 +1617,7 @@
         );
         barometerHeightCtx.font = "11px sans-serif";
         barometerHeightCtx.fillText(
-          "Barometer (green)  GPS sensor (blue)  GPS port final (amber)",
+          "Barometer (green)  GPS sensor (blue)  GPS port final (yellow)",
           rect.width / 2,
           rect.height - 10
         );
@@ -1696,6 +1716,7 @@
           const gpsPortFinalAltitudeM = asFiniteNumber(
             data.outputs?.gps_port?.alt_m
           );
+          const finalAltitudeOffsetM = asFiniteNumber(data.final_altitude_offset_m);
           const rawAltitude =
             asFiniteNumber(
               opticalHeightM,
@@ -1726,6 +1747,9 @@
           const gpsPortFinalHeightForPlot = Number.isFinite(gpsPortFinalAltitudeM)
             ? gpsPortFinalAltitudeM
             : (plotState.gpsPortFinalHeight[plotState.gpsPortFinalHeight.length - 1] ?? NaN);
+          plotState.finalAltitudeOffsetM = Number.isFinite(finalAltitudeOffsetM)
+            ? finalAltitudeOffsetM
+            : plotState.finalAltitudeOffsetM;
           filterState.vx = vx;
           filterState.vy = vy;
           filterState.height = altitude;

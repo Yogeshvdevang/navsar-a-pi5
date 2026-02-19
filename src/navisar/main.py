@@ -317,6 +317,35 @@ def _safe_float(value):
         return None
 
 
+def _capture_startup_baro_offset_max(barometer_driver, duration_s=3.0, poll_s=0.05):
+    """Sample barometer for a short window and return the max observed height."""
+    if barometer_driver is None:
+        return None, 0
+    duration_s = max(0.0, float(duration_s))
+    poll_s = max(0.01, float(poll_s))
+    deadline = time.time() + duration_s
+    max_height_m = None
+    sample_count = 0
+    while time.time() < deadline:
+        try:
+            barometer_driver.update()
+        except Exception:
+            pass
+        height_m = getattr(barometer_driver, "current_m", None)
+        if height_m is None and hasattr(barometer_driver, "get_height_m"):
+            try:
+                height_m = barometer_driver.get_height_m()
+            except Exception:
+                height_m = None
+        height_m = _safe_float(height_m)
+        if height_m is not None and math.isfinite(height_m):
+            sample_count += 1
+            if max_height_m is None or height_m > max_height_m:
+                max_height_m = height_m
+        time.sleep(poll_s)
+    return max_height_m, sample_count
+
+
 def _vo_speed_accuracy(inlier_ratio, flow_mad_px):
     """Estimate speed accuracy (m/s) from VO quality metrics."""
     base = 0.5
@@ -2159,11 +2188,39 @@ def main():
         print_enabled=vps_gps_print,
         ignore_flags=vps_gps_ignore_flags,
     )
+    configured_final_altitude_offset_m = float(
+        pixhawk_cfg.get("final_altitude_offset_m", 0.0)
+    )
+    startup_baro_driver = barometer_driver
+    if startup_baro_driver is None and vo is not None:
+        startup_baro_driver = getattr(
+            getattr(vo, "height_estimator", None), "barometer_driver", None
+        )
+    calibrated_final_altitude_offset_m = configured_final_altitude_offset_m
+    sampled_offset_m, sampled_count = _capture_startup_baro_offset_max(
+        startup_baro_driver,
+        duration_s=3.0,
+        poll_s=0.05,
+    )
+    if sampled_offset_m is not None:
+        calibrated_final_altitude_offset_m = float(sampled_offset_m)
+        pixhawk_cfg["final_altitude_offset_m"] = calibrated_final_altitude_offset_m
+        print(
+            "Final altitude offset calibrated from barometer startup window: "
+            f"{calibrated_final_altitude_offset_m:.3f} m "
+            f"(samples={sampled_count}, max of 3.0s)"
+        )
+    else:
+        print(
+            "Final altitude offset calibration skipped (no barometer samples in 3.0s); "
+            f"using config value {configured_final_altitude_offset_m:.3f} m"
+        )
     gps_port_mode = GpsPortMode(
         emitter=gps_port_emitter,
         nmea_emitter=nmea_emitter,
         ubx_emitter=ubx_emitter,
         print_enabled=gps_output_print,
+        final_altitude_offset_m=calibrated_final_altitude_offset_m,
     )
 
     def _ensure_nmea_emitter():
@@ -2802,6 +2859,9 @@ def main():
                     "mode": active_output_mode,
                     "gps_output_format": gps_format_active,
                     "altitude_offset_m": current_altitude_offset_m,
+                    "final_altitude_offset_m": _safe_float(
+                        gps_port_mode.final_altitude_offset_m
+                    ),
                     "heading": {
                         "deg": _safe_float(runtime_heading_deg),
                         "source": runtime_heading_source,
@@ -3100,6 +3160,9 @@ def main():
                             "mode": current_mode if current_mode in optical_modes else output_mode,
                             "gps_output_format": gps_format_active,
                             "altitude_offset_m": current_altitude_offset_m,
+                            "final_altitude_offset_m": _safe_float(
+                                gps_port_mode.final_altitude_offset_m
+                            ),
                             "heading": {
                                 "deg": _safe_float(runtime_heading_deg),
                                 "source": runtime_heading_source,

@@ -7,6 +7,7 @@ baud: 115200
 attitude_rate_hz: 30.0
 fallback_altitude_m: 1.0
 altitude_offset_m: -0.141
+final_altitude_offset_m: 0
 mavlink_source:
   system_id: 1
   component_id: 192
