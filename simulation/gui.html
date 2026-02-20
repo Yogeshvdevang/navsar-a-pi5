@@ -708,6 +708,9 @@
             <div class="plot-wrap baro-portrait">
               <canvas id="barometer-height-plot"></canvas>
             </div>
+            <div class="gps-origin-note" style="margin-top:8px;">
+              baro_alt_m: <strong id="baro-alt-m">--</strong>
+            </div>
           </div>
         </div>
       </div>
@@ -1706,8 +1709,7 @@
             opt?.distance_mm != null ? opt.distance_mm / 1000 : null,
             opt?.dist_cm != null ? opt.dist_cm / 100 : null
           ) ?? 0;
-          const barometerHeightM = asFiniteNumber(
-            data.sensors?.barometer?.height_m,
+          const barometerAltM = asFiniteNumber(
             data.sensors?.barometer?.raw_alt_m
           );
           const gpsSensorAltitudeM = asFiniteNumber(
@@ -1716,7 +1718,10 @@
           const gpsPortFinalAltitudeM = asFiniteNumber(
             data.outputs?.gps_port?.alt_m
           );
-          const finalAltitudeOffsetM = asFiniteNumber(data.final_altitude_offset_m);
+          const finalAltitudeOffsetM = asFiniteNumber(
+            data.optical_altitude_offset_m,
+            data.final_altitude_offset_m
+          );
           const rawAltitude =
             asFiniteNumber(
               opticalHeightM,
@@ -1738,9 +1743,10 @@
           const altitude = filterSignal(filterState.height, rawAltitude, 0.22, 0.0, 0.08);
           // Use optical sensor meters directly for all height graphs (no smoothing/offset/fallback in graph data).
           const sharedHeightForPlots = opticalHeightM;
-          const barometerHeightForPlot = Number.isFinite(barometerHeightM)
-            ? barometerHeightM
-            : (plotState.barometerHeight[plotState.barometerHeight.length - 1] ?? NaN);
+          const lastBarometerHeight = plotState.barometerHeight[plotState.barometerHeight.length - 1];
+          const barometerHeightForPlot = Number.isFinite(barometerAltM)
+            ? barometerAltM
+            : (Number.isFinite(lastBarometerHeight) ? lastBarometerHeight : 0);
           const gpsSensorHeightForPlot = Number.isFinite(gpsSensorAltitudeM)
             ? gpsSensorAltitudeM
             : (plotState.gpsSensorHeight[plotState.gpsSensorHeight.length - 1] ?? NaN);
@@ -1878,6 +1884,7 @@
 
           setText("rt-height", altitude, 3);
           setText("rt-of-height", opticalHeightM, 3);
+          setText("baro-alt-m", barometerAltM, 3);
           setText("rt-vx", vx, 3);
           setText("rt-vy", vy, 3);
           let posX = 0;

@@ -38,17 +38,24 @@ class BarometerHeightEstimator:
         if msg is None:
             return
         self.last_msg_time = time.time()
-        press_hpa = msg.get("press_hpa")
-        temp_c = msg.get("temp_c")
-        alt_m = msg.get("alt_m")
+        msg_type = msg.get_type()
+        if msg_type.startswith("SCALED_PRESSURE"):
+            press_raw = getattr(msg, "press_abs", None)
+            temp_raw = getattr(msg, "temperature", None)
+            press_hpa = float(press_raw) if press_raw is not None else None
+            temp_c = float(temp_raw) / 100.0 if temp_raw is not None else None
+        elif msg_type == "HIGHRES_IMU":
+            press_raw = getattr(msg, "abs_pressure", None)
+            temp_raw = getattr(msg, "temperature", None)
+            press_hpa = float(press_raw) if press_raw is not None else None
+            temp_c = float(temp_raw) if temp_raw is not None else None
+        else:
+            return
+        alt_m = self._pressure_to_alt_m(press_hpa, temp_c)
         if press_hpa is not None:
             self.raw_press_hpa = press_hpa
         if temp_c is not None:
             self.raw_temp_c = temp_c
-        if press_hpa is not None:
-            alt_from_pressure = self._pressure_to_alt_m(press_hpa, temp_c)
-            if alt_from_pressure is not None and math.isfinite(alt_from_pressure):
-                alt_m = alt_from_pressure
         if alt_m is None:
             return
         self.raw_alt_m = alt_m

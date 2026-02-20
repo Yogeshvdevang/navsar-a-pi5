@@ -104,7 +104,7 @@ ODOM_GPS_FIX_TYPE = 3
 ODOM_GPS_SATS = 10
 ODOMETRY_SEND_INTERVAL_S = 0.04
 ATTITUDE_RATE_HZ = 30.0
-BARO_RATE_HZ = 10.0
+BARO_RATE_HZ = 25.0
 IMU_RATE_HZ = 30.0
 OUTPUT_MODE = "gps_mavlink" # odometry, gps_mavlink, gps_port, optical_flow_mavlink, optical_flow_gps_port, optical_flow_then_vo
 VIO_MODE = "vo"  # vo, vio_imu
@@ -1300,6 +1300,29 @@ def _init_mavlink_interface(pixhawk_cfg, use_barometer, use_mavlink=None):
             getattr(mavutil.mavlink, "MAV_COMP_ID_RANGEFINDER", 173),
         )
     )
+    barometer_cfg = pixhawk_cfg.get("barometer", {})
+    if not isinstance(barometer_cfg, dict):
+        barometer_cfg = {}
+    barometer_rate_hz = float(barometer_cfg.get("rate_hz", BARO_RATE_HZ))
+    default_baro_msgs = [
+        "SCALED_PRESSURE",
+        "SCALED_PRESSURE2",
+        "SCALED_PRESSURE3",
+        "HIGHRES_IMU",
+    ]
+    raw_baro_msgs = barometer_cfg.get("messages", default_baro_msgs)
+    if not isinstance(raw_baro_msgs, list):
+        raw_baro_msgs = default_baro_msgs
+    barometer_messages = []
+    for msg_name in raw_baro_msgs:
+        msg_text = str(msg_name).strip().upper()
+        if not msg_text:
+            continue
+        if msg_text.startswith("MAVLINK_MSG_ID_"):
+            msg_text = msg_text[len("MAVLINK_MSG_ID_"):]
+        barometer_messages.append(msg_text)
+    if not barometer_messages:
+        barometer_messages = default_baro_msgs
     mavlink_interface = None
     if use_mavlink or use_barometer:
         try:
@@ -1320,19 +1343,13 @@ def _init_mavlink_interface(pixhawk_cfg, use_barometer, use_mavlink=None):
                 rate_hz=IMU_RATE_HZ,
             )
             if use_barometer:
-                # Request all common barometer/altitude message variants.
-                for msg_name in (
-                    "MAVLINK_MSG_ID_SCALED_PRESSURE",
-                    "MAVLINK_MSG_ID_SCALED_PRESSURE2",
-                    "MAVLINK_MSG_ID_SCALED_PRESSURE3",
-                    "MAVLINK_MSG_ID_HIGHRES_IMU",
-                    "MAVLINK_MSG_ID_VFR_HUD",
-                ):
-                    msg_id = getattr(mavutil.mavlink, msg_name, None)
+                mavlink_interface.set_barometer_message_types(barometer_messages)
+                for msg_name in barometer_messages:
+                    msg_id = getattr(mavutil.mavlink, f"MAVLINK_MSG_ID_{msg_name}", None)
                     if msg_id is not None:
                         mavlink_interface.request_message_interval(
                             msg_id=msg_id,
-                            rate_hz=BARO_RATE_HZ,
+                            rate_hz=barometer_rate_hz,
                         )
         except Exception as exc:
             print(f"Warning: MAVLink not available ({exc}); using fallback height.")
@@ -1654,10 +1671,7 @@ def main():
     optical_port = optical_cfg.get("port", OPTICAL_FLOW_PORT)
     optical_baud = int(optical_cfg.get("baud", OPTICAL_FLOW_BAUD))
     optical_rate_hz = float(optical_cfg.get("rate_hz", OPTICAL_FLOW_RATE_HZ))
-    optical_altitude_scale = float(optical_cfg.get("altitude_scale", 1.0))
-    if optical_altitude_scale <= 0.0:
-        print("Warning: optical_flow.altitude_scale must be > 0; using 1.0.")
-        optical_altitude_scale = 1.0
+    optical_altitude_offset_m = float(optical_cfg.get("altitude_offset_m", 0.0))
     optical_data_mode = str(optical_cfg.get("data_mode", "stable")).strip().lower()
     if optical_data_mode not in {"stable", "raw_tool"}:
         print(
@@ -2197,23 +2211,38 @@ def main():
             getattr(vo, "height_estimator", None), "barometer_driver", None
         )
     calibrated_final_altitude_offset_m = configured_final_altitude_offset_m
-    sampled_offset_m, sampled_count = _capture_startup_baro_offset_max(
-        startup_baro_driver,
-        duration_s=3.0,
-        poll_s=0.05,
-    )
-    if sampled_offset_m is not None:
-        calibrated_final_altitude_offset_m = float(sampled_offset_m)
-        pixhawk_cfg["final_altitude_offset_m"] = calibrated_final_altitude_offset_m
+    # Read startup barometer once (no wait window) and use it as optical-flow altitude offset.
+    startup_optical_altitude_offset_m = None
+    if startup_baro_driver is not None:
+        try:
+            startup_baro_driver.update()
+        except Exception:
+            pass
+        startup_optical_altitude_offset_m = _safe_float(
+            getattr(startup_baro_driver, "raw_alt_m", None)
+        )
+        if startup_optical_altitude_offset_m is None:
+            startup_optical_altitude_offset_m = _safe_float(
+                getattr(startup_baro_driver, "current_m", None)
+            )
+        if startup_optical_altitude_offset_m is None:
+            try:
+                startup_optical_altitude_offset_m = _safe_float(
+                    startup_baro_driver.get_height_m()
+                )
+            except Exception:
+                startup_optical_altitude_offset_m = None
+    if startup_optical_altitude_offset_m is not None:
+        optical_altitude_offset_m = float(startup_optical_altitude_offset_m)
+        optical_cfg["altitude_offset_m"] = optical_altitude_offset_m
         print(
-            "Final altitude offset calibrated from barometer startup window: "
-            f"{calibrated_final_altitude_offset_m:.3f} m "
-            f"(samples={sampled_count}, max of 3.0s)"
+            "Optical altitude offset initialized from startup barometer sample: "
+            f"{optical_altitude_offset_m:.3f} m"
         )
     else:
         print(
-            "Final altitude offset calibration skipped (no barometer samples in 3.0s); "
-            f"using config value {configured_final_altitude_offset_m:.3f} m"
+            "Startup barometer sample unavailable for optical offset; "
+            f"using config optical_flow.altitude_offset_m={optical_altitude_offset_m:.3f} m"
         )
     gps_port_mode = GpsPortMode(
         emitter=gps_port_emitter,
@@ -2827,11 +2856,18 @@ def main():
                 mavlink_interface,
             )
         elif active_output_mode == "optical_flow_gps_port":
+            optical_alt_override_m = None
+            optical_sample = last_optical_flow["value"]
+            if optical_sample is not None and optical_sample.dist_ok:
+                optical_alt_override_m = (
+                    float(optical_sample.distance_mm) / 1000.0
+                    + optical_altitude_offset_m
+                )
             optical_flow_gps_port_mode.handle(
                 now,
-                last_optical_flow["value"],
+                optical_sample,
                 selector.gps_origin(),
-                alt_override_m=alt_override_m,
+                alt_override_m=optical_alt_override_m,
                 heading_deg=runtime_heading_deg,
                 heading_only=False,
             )
@@ -2859,6 +2895,7 @@ def main():
                     "mode": active_output_mode,
                     "gps_output_format": gps_format_active,
                     "altitude_offset_m": current_altitude_offset_m,
+                    "optical_altitude_offset_m": _safe_float(optical_altitude_offset_m),
                     "final_altitude_offset_m": _safe_float(
                         gps_port_mode.final_altitude_offset_m
                     ),
@@ -3129,10 +3166,7 @@ def main():
                 alt_override_m = None
                 sample = last_optical_flow["value"]
                 if sample is not None and sample.dist_ok:
-                    alt_override_m = (
-                        (float(sample.distance_mm) / 1000.0 + current_altitude_offset_m)
-                        * optical_altitude_scale
-                    )
+                    alt_override_m = float(sample.distance_mm) / 1000.0 + optical_altitude_offset_m
 
                 if current_mode == "optical_flow_mavlink":
                     optical_flow_mode.handle(
@@ -3160,6 +3194,7 @@ def main():
                             "mode": current_mode if current_mode in optical_modes else output_mode,
                             "gps_output_format": gps_format_active,
                             "altitude_offset_m": current_altitude_offset_m,
+                            "optical_altitude_offset_m": _safe_float(optical_altitude_offset_m),
                             "final_altitude_offset_m": _safe_float(
                                 gps_port_mode.final_altitude_offset_m
                             ),

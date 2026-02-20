@@ -2,12 +2,19 @@ use_mavlink: true
 use_barometer: true
 use_imu_fusion: true
 use_sensor_fusion: false
-device: /dev/ttyACM0
+device: /dev/ttyACM1
 baud: 115200
 attitude_rate_hz: 30.0
 fallback_altitude_m: 1.0
 altitude_offset_m: -0.141
 final_altitude_offset_m: 0
+barometer:
+  rate_hz: 25.0
+  messages:
+  - SCALED_PRESSURE
+  - SCALED_PRESSURE2
+  - SCALED_PRESSURE3
+  - HIGHRES_IMU
 mavlink_source:
   system_id: 1
   component_id: 192
@@ -42,6 +49,7 @@ optical_flow:
   port: /dev/ttyAMA3
   baud: 115200
   rate_hz: 60.0
+  altitude_offset_m: 500.0
   heartbeat_interval_s: 0.6
   print: true
   max_flow_raw: 120

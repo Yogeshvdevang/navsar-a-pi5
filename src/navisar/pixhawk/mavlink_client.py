@@ -45,6 +45,12 @@ class MavlinkInterface:
             )
         self._last_attitude = None
         self._last_error_time = 0.0
+        self._barometer_message_types = [
+            "SCALED_PRESSURE",
+            "SCALED_PRESSURE2",
+            "SCALED_PRESSURE3",
+            "HIGHRES_IMU",
+        ]
         self._wait_heartbeat(heartbeat_timeout)
 
     def _wait_heartbeat(self, timeout):
@@ -245,55 +251,17 @@ class MavlinkInterface:
         }
 
     def recv_barometer(self):
-        """Receive a barometer-related message."""
-        msg = self.recv_match_safe(
-            type=[
-                "SCALED_PRESSURE",
-                "SCALED_PRESSURE2",
-                "SCALED_PRESSURE3",
-                "HIGHRES_IMU",
-                "VFR_HUD",
-            ],
+        """Receive one raw barometer MAVLink message."""
+        return self.recv_match_safe(
+            type=self._barometer_message_types,
             blocking=False,
         )
-        if msg is None:
-            return None
-        msg_type = msg.get_type()
-        if msg_type == "VFR_HUD":
-            return {
-                "alt_m": float(msg.alt),
-                "press_hpa": None,
-                "temp_c": None,
-                "press_diff_hpa": None,
-                "time_s": time.time(),
-            }
-        if msg_type == "HIGHRES_IMU":
-            abs_pressure = getattr(msg, "abs_pressure", None)
-            press_hpa = float(abs_pressure) if abs_pressure is not None else None
-            temp_raw = getattr(msg, "temperature", None)
-            temp_c = float(temp_raw) if temp_raw is not None else None
-            press_diff = getattr(msg, "diff_pressure", None)
-            press_diff_hpa = float(press_diff) if press_diff is not None else None
-            return {
-                "alt_m": None,
-                "press_hpa": press_hpa,
-                "temp_c": temp_c,
-                "press_diff_hpa": press_diff_hpa,
-                "time_s": time.time(),
-            }
-        press_abs = getattr(msg, "press_abs", None)
-        press_hpa = float(press_abs) if press_abs is not None else None
-        temp_raw = getattr(msg, "temperature", None)
-        temp_c = float(temp_raw) / 100.0 if temp_raw is not None else None
-        press_diff = getattr(msg, "press_diff", None)
-        press_diff_hpa = float(press_diff) if press_diff is not None else None
-        return {
-            "alt_m": None,
-            "press_hpa": press_hpa,
-            "temp_c": temp_c,
-            "press_diff_hpa": press_diff_hpa,
-            "time_s": time.time(),
-        }
+
+    def set_barometer_message_types(self, message_types):
+        """Set MAVLink message types used for barometer reads."""
+        if not message_types:
+            return
+        self._barometer_message_types = [str(t).strip() for t in message_types if str(t).strip()]
 
     def get_last_attitude(self):
         """Return the last cached attitude, if any."""

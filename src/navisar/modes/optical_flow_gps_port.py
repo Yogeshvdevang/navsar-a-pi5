@@ -173,23 +173,27 @@ class OpticalFlowGpsPortMode:
             raw_dist_mm = int(sample.distance_mm)
 
         if raw_alt_m is not None and _finite(raw_alt_m):
-            raw_alt_m = _clamp(raw_alt_m, self.altitude_min_m, self.altitude_max_m)
-            if self._alt_filtered_m is None:
-                self._alt_filtered_m = raw_alt_m
+            if alt_override_m is not None and _finite(alt_override_m):
+                # Caller provided final altitude value (offset + sensor distance).
+                self._z_m = raw_alt_m
             else:
-                jump_limit = max(0.0, self.altitude_jump_limit_m)
-                if jump_limit > 0.0:
-                    delta = raw_alt_m - self._alt_filtered_m
-                    if abs(delta) > jump_limit:
-                        raw_alt_m = self._alt_filtered_m + (
-                            jump_limit if delta > 0 else -jump_limit
-                        )
-                alpha = _clamp(self.altitude_smoothing_alpha, 0.0, 1.0)
-                filtered_alt = alpha * raw_alt_m + (1.0 - alpha) * self._alt_filtered_m
-                if abs(filtered_alt - self._alt_filtered_m) < self.altitude_deadband_m:
-                    filtered_alt = self._alt_filtered_m
-                self._alt_filtered_m = filtered_alt
-            self._z_m = self._alt_filtered_m
+                raw_alt_m = _clamp(raw_alt_m, self.altitude_min_m, self.altitude_max_m)
+                if self._alt_filtered_m is None:
+                    self._alt_filtered_m = raw_alt_m
+                else:
+                    jump_limit = max(0.0, self.altitude_jump_limit_m)
+                    if jump_limit > 0.0:
+                        delta = raw_alt_m - self._alt_filtered_m
+                        if abs(delta) > jump_limit:
+                            raw_alt_m = self._alt_filtered_m + (
+                                jump_limit if delta > 0 else -jump_limit
+                            )
+                    alpha = _clamp(self.altitude_smoothing_alpha, 0.0, 1.0)
+                    filtered_alt = alpha * raw_alt_m + (1.0 - alpha) * self._alt_filtered_m
+                    if abs(filtered_alt - self._alt_filtered_m) < self.altitude_deadband_m:
+                        filtered_alt = self._alt_filtered_m
+                    self._alt_filtered_m = filtered_alt
+                self._z_m = self._alt_filtered_m
 
         alt_m = self._z_m if _finite(self._z_m) else None
 
@@ -203,6 +207,7 @@ class OpticalFlowGpsPortMode:
             nav_pvt_alt_mm_override=raw_dist_mm,
             heading_deg=heading_deg,
             heading_only=heading_only,
+            apply_final_altitude_offset=False,
         )
         port_payload = self.gps_port_mode.last_payload
         if port_payload is None:

@@ -56,6 +56,7 @@ class GpsPortMode:
         nav_pvt_alt_mm_override=None,
         heading_deg=None,
         heading_only=False,
+        apply_final_altitude_offset=True,
     ):
         """Send GPS sentences over serial if ready."""
         if origin is None:
@@ -72,7 +73,8 @@ class GpsPortMode:
             self._warn(now, "GPS->PORT: barometer altitude unavailable; skipping send.")
             return
         alt_base = 0.0 if origin[2] is None else float(origin[2])
-        alt_m = alt_base + float(alt_override_m) + self.final_altitude_offset_m
+        final_offset_m = self.final_altitude_offset_m if apply_final_altitude_offset else 0.0
+        alt_m = alt_base + float(alt_override_m) + final_offset_m
         if abs(alt_m) < 1e-3:
             alt_m = 0.0
         if not (_finite(lat) and _finite(lon) and _finite(alt_m)):
