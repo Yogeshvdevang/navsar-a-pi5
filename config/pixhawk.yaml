@@ -2,7 +2,7 @@ use_mavlink: true
 use_barometer: true
 use_imu_fusion: true
 use_sensor_fusion: false
-device: /dev/ttyACM1
+device: /dev/ttyACM0
 baud: 115200
 attitude_rate_hz: 30.0
 fallback_altitude_m: 1.0
@@ -25,7 +25,7 @@ gps_min_fix_type: 3
 gps_input:
   enabled: true
   port: /dev/ttyAMA5
-  baud: 9600
+  baud: 115200 # 9600
   format: auto
   init_wait_s: 3
   min_fix_type: 3
@@ -33,7 +33,7 @@ odom_gps_send_interval_s: 0.2
 odom_gps_fix_type: 3
 odom_gps_sats: 10
 odometry_send_interval_s: 0.04
-output_mode: optical_flow_gps_port
+output_mode: gps_passthrough
 vio_mode: vo
 vio_imu:
   print: true
@@ -100,6 +100,13 @@ gps_output:
   update_s: 7
   print: true
   raw_print: true
+gps_passthrough:
+  input_port: /dev/ttyAMA5
+  input_baud: 115200
+  output_port: /dev/ttyAMA0
+  output_baud: 115200 #9600
+  log_dir: data/gps_passthrough_logs
+  print: true
 vps_gps:
   send_interval_s: 0.1
   mavlink_send_interval_s: 0.1

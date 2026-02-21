@@ -31,6 +31,7 @@ from navisar.pixhawk.gps_output import FakeGpsEmitter, NmeaSerialEmitter, UbxSer
 from navisar.pixhawk.mavlink_client import MavlinkInterface
 from navisar.modes.gps_mavlink import GpsMavlinkMode
 from navisar.modes.gps_port import GpsPortMode
+from navisar.modes.gps_passthrough import GpsPassthroughMode
 from navisar.modes.odometry import OdometryMode
 from navisar.modes.optical_flow_gps_port import OpticalFlowGpsPortMode
 from navisar.modes.optical_flow_mavlink import OpticalFlowMavlinkMode
@@ -106,7 +107,7 @@ ODOMETRY_SEND_INTERVAL_S = 0.04
 ATTITUDE_RATE_HZ = 30.0
 BARO_RATE_HZ = 25.0
 IMU_RATE_HZ = 30.0
-OUTPUT_MODE = "gps_mavlink" # odometry, gps_mavlink, gps_port, optical_flow_mavlink, optical_flow_gps_port, optical_flow_then_vo
+OUTPUT_MODE = "gps_mavlink" # odometry, gps_mavlink, gps_port, gps_passthrough, optical_flow_mavlink, optical_flow_gps_port, optical_flow_then_vo
 VIO_MODE = "vo"  # vo, vio_imu
 FAKE_GPS_SMOOTH_ALPHA = 0.2
 FAKE_GPS_MAX_STEP_M = 1.5
@@ -1614,6 +1615,7 @@ def main():
         "odometry",
         "gps_mavlink",
         "gps_port",
+        "gps_passthrough",
         "optical_flow_mavlink",
         "optical_flow_gps_port",
         "optical_flow_then_vo",
@@ -1625,6 +1627,7 @@ def main():
         "odometry",
         "gps_mavlink",
         "gps_port",
+        "gps_passthrough",
         "optical_flow_then_vo",
     }
     hybrid_optical_vo_mode = output_mode == "optical_flow_then_vo"
@@ -1653,6 +1656,7 @@ def main():
     gps_input_wait_s = float(gps_input_cfg.get("init_wait_s", 60.0))
     gps_input_min_fix = int(gps_input_cfg.get("min_fix_type", GPS_MIN_FIX_TYPE))
     gps_input_reader = None
+    passthrough_requested = output_mode == "gps_passthrough"
     gps_serial_cfg = pixhawk_cfg.get("gps_serial", {})
     gps_serial_enabled = bool(gps_serial_cfg.get("enabled", False))
     gps_serial_port = gps_serial_cfg.get("port")
@@ -1893,7 +1897,11 @@ def main():
     vps_gps_use_compass_yaw = bool(vps_gps_cfg.get("use_compass_yaw", False))
     vps_gps_ignore_flags = int(vps_gps_cfg.get("ignore_flags", 28))
     print(f"GPS_INPUT ignore_flags: {vps_gps_ignore_flags}")
-    if gps_output_enabled and gps_output_format in {"nmea", "ubx_nmea", "ubx+nmea"}:
+    if (
+        gps_output_enabled
+        and not passthrough_requested
+        and gps_output_format in {"nmea", "ubx_nmea", "ubx+nmea"}
+    ):
         nmea_emitter = NmeaSerialEmitter(
             port=gps_output_port,
             baud=gps_output_baud,
@@ -1904,7 +1912,11 @@ def main():
             update_s=gps_output_update_s,
             raw_print=gps_output_raw_print,
         )
-    if gps_output_enabled and gps_output_format in {"ubx", "ubx_nmea", "ubx+nmea"}:
+    if (
+        gps_output_enabled
+        and not passthrough_requested
+        and gps_output_format in {"ubx", "ubx_nmea", "ubx+nmea"}
+    ):
         ubx_emitter = UbxSerialEmitter(
             port=gps_output_port,
             baud=gps_output_baud,
@@ -1976,6 +1988,8 @@ def main():
         or gps_input_port
         or "/dev/ttyAMA0"
     )
+    if passthrough_requested:
+        gps_input_enabled = False
     if gps_input_enabled:
         probe_baud = gps_input_baud if isinstance(gps_input_baud, int) else 9600
         if probe_nmea_on_port(
@@ -2251,6 +2265,31 @@ def main():
         print_enabled=gps_output_print,
         final_altitude_offset_m=calibrated_final_altitude_offset_m,
     )
+    gps_passthrough_cfg = pixhawk_cfg.get("gps_passthrough", {})
+    gps_passthrough_input_port = gps_passthrough_cfg.get("input_port", gps_input_port)
+    gps_passthrough_input_baud = gps_passthrough_cfg.get("input_baud", gps_input_baud)
+    if isinstance(gps_passthrough_input_baud, str):
+        gps_passthrough_input_baud = (
+            9600 if gps_passthrough_input_baud.strip().lower() == "auto"
+            else int(gps_passthrough_input_baud)
+        )
+    if gps_passthrough_input_baud is None:
+        gps_passthrough_input_baud = 9600
+    gps_passthrough_output_port = gps_passthrough_cfg.get("output_port", gps_output_port)
+    gps_passthrough_output_baud = int(
+        gps_passthrough_cfg.get("output_baud", gps_output_baud)
+    )
+    gps_passthrough_log_dir = gps_passthrough_cfg.get(
+        "log_dir", str(_repo_root() / "data" / "gps_passthrough_logs")
+    )
+    gps_passthrough_mode = GpsPassthroughMode(
+        input_port=gps_passthrough_input_port,
+        input_baud=gps_passthrough_input_baud,
+        output_port=gps_passthrough_output_port,
+        output_baud=gps_passthrough_output_baud,
+        log_dir=gps_passthrough_log_dir,
+        print_enabled=bool(gps_passthrough_cfg.get("print", True)),
+    )
 
     def _ensure_nmea_emitter():
         nonlocal nmea_emitter
@@ -2269,6 +2308,16 @@ def main():
             )
         except Exception as exc:
             print(f"Warning: unable to initialize NMEA emitter ({exc})")
+
+    def _close_nmea_emitter():
+        nonlocal nmea_emitter
+        if nmea_emitter is None:
+            return
+        try:
+            nmea_emitter._ser.close()
+        except Exception:
+            pass
+        nmea_emitter = None
 
     def _ensure_ubx_emitter():
         nonlocal ubx_emitter
@@ -2290,8 +2339,24 @@ def main():
         except Exception as exc:
             print(f"Warning: unable to initialize UBX emitter ({exc})")
 
+    def _close_ubx_emitter():
+        nonlocal ubx_emitter
+        if ubx_emitter is None:
+            return
+        try:
+            ubx_emitter._ser.close()
+        except Exception:
+            pass
+        ubx_emitter = None
+
     def apply_gps_format_selection():
         requested = _normalize_gps_format(gps_format_state.get())
+        if mode_state.get() == "gps_passthrough":
+            _close_nmea_emitter()
+            _close_ubx_emitter()
+            gps_port_mode.nmea_emitter = None
+            gps_port_mode.ubx_emitter = None
+            return requested, "disabled"
         if requested == "nmea":
             _ensure_nmea_emitter()
         elif requested == "ubx":
@@ -2515,10 +2580,11 @@ def main():
                 f"{sorted(optical_modes)}; defaulting to optical_flow_gps_port."
             )
             optical_flow_output_mode = "optical_flow_gps_port"
-        if vo_output_mode not in {"gps_mavlink", "gps_port", "odometry"}:
+        if vo_output_mode not in {"gps_mavlink", "gps_port", "gps_passthrough", "odometry"}:
             print(
                 "optical_flow_vo.vo_output_mode must be "
-                "gps_mavlink, gps_port, or odometry; defaulting to gps_mavlink."
+                "gps_mavlink, gps_port, gps_passthrough, or odometry; "
+                "defaulting to gps_mavlink."
             )
             vo_output_mode = "gps_mavlink"
     optical_flow_mode = OpticalFlowMavlinkMode(
@@ -2840,6 +2906,8 @@ def main():
                 heading_deg=runtime_heading_deg,
                 heading_only=False,
             )
+        elif active_output_mode == "gps_passthrough":
+            gps_passthrough_mode.handle(now)
         elif active_output_mode == "odometry":
             odometry_mode.handle(
                 now,
@@ -3028,6 +3096,7 @@ def main():
                         "odometry": odometry_mode.last_payload,
                         "gps_mavlink": gps_mavlink_mode.last_payload,
                         "gps_port": gps_port_mode.last_payload,
+                        "gps_passthrough": gps_passthrough_mode.last_payload,
                         "optical_flow_mavlink": optical_flow_mode.last_payload,
                         "optical_flow_gps_port": optical_flow_gps_port_mode.last_payload,
                     },
@@ -3064,6 +3133,7 @@ def main():
         finally:
             if optical_reader is not None:
                 optical_reader.stop()
+            gps_passthrough_mode.close()
             if dashboard_server is not None:
                 dashboard_server.shutdown()
             if visual_slam is not None:
@@ -3325,6 +3395,7 @@ def main():
                                 "odometry": odometry_mode.last_payload,
                                 "gps_mavlink": gps_mavlink_mode.last_payload,
                                 "gps_port": gps_port_mode.last_payload,
+                                "gps_passthrough": gps_passthrough_mode.last_payload,
                                 "optical_flow_mavlink": optical_flow_mode.last_payload,
                                 "optical_flow_gps_port": optical_flow_gps_port_mode.last_payload,
                             },
@@ -3334,6 +3405,7 @@ def main():
         finally:
             if optical_reader is not None:
                 optical_reader.stop()
+            gps_passthrough_mode.close()
             if dashboard_server is not None:
                 dashboard_server.shutdown()
 
