@@ -280,41 +280,6 @@ def _persist_pixhawk_runtime_settings(
     }
 
 
-def _persist_calibration_tuning(
-    pixhawk_config_path,
-    lat_scale,
-    lon_scale,
-    alt_offset_m,
-):
-    """Persist calibration tuning values into config/pixhawk.yaml."""
-    path = Path(pixhawk_config_path)
-    with _CONFIG_WRITE_LOCK:
-        cfg = _load_yaml(path)
-        if not isinstance(cfg, dict):
-            cfg = {}
-        calibration_cfg = cfg.get("calibration")
-        if not isinstance(calibration_cfg, dict):
-            calibration_cfg = {}
-        tuning_cfg = calibration_cfg.get("optical_gps_tuning")
-        if not isinstance(tuning_cfg, dict):
-            tuning_cfg = {}
-
-        tuning_cfg["lat_scale"] = round(float(lat_scale), 6)
-        tuning_cfg["lon_scale"] = round(float(lon_scale), 6)
-        tuning_cfg["alt_offset_m"] = round(float(alt_offset_m), 6)
-        calibration_cfg["optical_gps_tuning"] = tuning_cfg
-        cfg["calibration"] = calibration_cfg
-
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
-            yaml.safe_dump(cfg, handle, sort_keys=False)
-    return {
-        "lat_scale": tuning_cfg["lat_scale"],
-        "lon_scale": tuning_cfg["lon_scale"],
-        "alt_offset_m": tuning_cfg["alt_offset_m"],
-    }
-
-
 def _persist_gps_origin(pixhawk_config_path, lat, lon, alt_m):
     """Persist GPS origin into config/pixhawk.yaml."""
     path = Path(pixhawk_config_path)
@@ -676,7 +641,6 @@ def _make_dashboard_handler(
     calibration_enabled,
     calibration_gps_graph_enabled,
     calibration_tuning_state,
-    calibration_tuning_defaults,
 ):
     class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -775,11 +739,6 @@ def _make_dashboard_handler(
                         "lat_scale": float(calibration_tuning_state["lat_scale"].get()),
                         "lon_scale": float(calibration_tuning_state["lon_scale"].get()),
                         "alt_offset_m": float(calibration_tuning_state["alt_offset_m"].get()),
-                    },
-                    "defaults": {
-                        "lat_scale": float(calibration_tuning_defaults["lat_scale"]),
-                        "lon_scale": float(calibration_tuning_defaults["lon_scale"]),
-                        "alt_offset_m": float(calibration_tuning_defaults["alt_offset_m"]),
                     },
                 }
                 data = json.dumps(payload).encode("utf-8")
@@ -1265,12 +1224,6 @@ def _make_dashboard_handler(
                 calibration_tuning_state["lat_scale"].set(lat_scale)
                 calibration_tuning_state["lon_scale"].set(lon_scale)
                 calibration_tuning_state["alt_offset_m"].set(alt_offset_m)
-                persisted_tuning = _persist_calibration_tuning(
-                    pixhawk_config_path=pixhawk_config_path,
-                    lat_scale=lat_scale,
-                    lon_scale=lon_scale,
-                    alt_offset_m=alt_offset_m,
-                )
                 data = json.dumps(
                     {
                         "ok": True,
@@ -1278,12 +1231,6 @@ def _make_dashboard_handler(
                             "lat_scale": lat_scale,
                             "lon_scale": lon_scale,
                             "alt_offset_m": alt_offset_m,
-                        },
-                        "persisted": persisted_tuning,
-                        "defaults": {
-                            "lat_scale": float(calibration_tuning_defaults["lat_scale"]),
-                            "lon_scale": float(calibration_tuning_defaults["lon_scale"]),
-                            "alt_offset_m": float(calibration_tuning_defaults["alt_offset_m"]),
                         },
                     }
                 ).encode("utf-8")
@@ -1396,7 +1343,6 @@ def start_dashboard_server(
     calibration_enabled,
     calibration_gps_graph_enabled,
     calibration_tuning_state,
-    calibration_tuning_defaults,
     open_browser=True,
 ):
     handler = _make_dashboard_handler(
@@ -1415,7 +1361,6 @@ def start_dashboard_server(
         calibration_enabled,
         calibration_gps_graph_enabled,
         calibration_tuning_state,
-        calibration_tuning_defaults,
     )
     server = http.server.ThreadingHTTPServer((host, port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1779,14 +1724,9 @@ def main():
     tuning_cfg = calibration_cfg.get("optical_gps_tuning", {})
     if not isinstance(tuning_cfg, dict):
         tuning_cfg = {}
-    tuning_defaults = {
-        "lat_scale": float(tuning_cfg.get("lat_scale", 1.0)),
-        "lon_scale": float(tuning_cfg.get("lon_scale", 1.0)),
-        "alt_offset_m": float(tuning_cfg.get("alt_offset_m", 0.0)),
-    }
-    lat_scale_state = ModeState(float(tuning_defaults["lat_scale"]))
-    lon_scale_state = ModeState(float(tuning_defaults["lon_scale"]))
-    alt_offset_state = ModeState(float(tuning_defaults["alt_offset_m"]))
+    lat_scale_state = ModeState(float(tuning_cfg.get("lat_scale", 1.0)))
+    lon_scale_state = ModeState(float(tuning_cfg.get("lon_scale", 1.0)))
+    alt_offset_state = ModeState(float(tuning_cfg.get("alt_offset_m", 0.0)))
     altitude_offset_m = float(pixhawk_cfg.get("altitude_offset_m", 0.0))
     altitude_offset_state = ModeState(altitude_offset_m)
     use_imu_fusion = pixhawk_cfg.get("use_imu_fusion", True)
@@ -2150,7 +2090,6 @@ def main():
                     "lon_scale": lon_scale_state,
                     "alt_offset_m": alt_offset_state,
                 },
-                tuning_defaults,
                 open_browser=_can_auto_open_browser(),
             )
             server_urls = getattr(dashboard_server, "navisar_urls", None) or [
@@ -3139,7 +3078,7 @@ def main():
                 optical_sample,
                 selector.gps_origin(),
                 alt_override_m=optical_alt_override_m,
-                heading_deg=None,
+                heading_deg=runtime_heading_deg,
                 heading_only=False,
             )
 
@@ -3463,7 +3402,7 @@ def main():
                         sample,
                         selector.gps_origin(),
                         alt_override_m=alt_override_m,
-                        heading_deg=None,
+                        heading_deg=runtime_heading_deg,
                         heading_only=False,
                     )
 
