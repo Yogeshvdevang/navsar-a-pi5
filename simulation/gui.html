@@ -634,6 +634,7 @@
       <div class="mode-buttons" id="rw-buttons">
         <button data-action="read">Read</button>
         <button data-action="write">Write</button>
+        <button data-action="restart">Restart</button>
       </div>
       <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">Black Box</div>
       <div class="mode-buttons" id="blackbox-buttons">
@@ -3164,6 +3165,10 @@
           }
         })();
       };
+      const handleRestart = () => {
+        appendLog("restart requested");
+        window.location.reload();
+      };
       const handleAutoZeroAltitude = async () => {
         try {
           const res = await fetch("/altitude-zero", {
@@ -3219,6 +3224,8 @@
             handleRead();
           } else if (btn.dataset.action === "write") {
             handleWrite();
+          } else if (btn.dataset.action === "restart") {
+            handleRestart();
           }
         });
       });
