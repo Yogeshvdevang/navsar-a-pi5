@@ -37,7 +37,7 @@ DEFAULT_DEADBAND = 0.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 0.6
 DEFAULT_PRINT_EVERY = 1
 DEFAULT_TERMINAL_MONITOR_HZ = 2.0
-DEFAULT_COMPASS_HZ = 100
+DEFAULT_COMPASS_HZ = 20.0
 DEFAULT_HEADING_SMOOTH_ALPHA = 0.25
 
 # Normal run config (no CLI needed). Edit here if required.
@@ -588,23 +588,11 @@ def optical_reader_loop(
                 state.y += state.flow_ema_y * dt * gain
                 state.points.append((state.x, state.y))
 
-                motion_heading = (
-                    wrap_heading(math.degrees(math.atan2(state.flow_ema_x, state.flow_ema_y)))
-                    if math.hypot(state.flow_ema_x, state.flow_ema_y) > 1e-6
-                    else None
-                )
                 target_heading = None
                 heading_fusion_source = "hold"
                 if compass_heading is not None and math.isfinite(float(compass_heading)):
                     target_heading = wrap_heading(float(compass_heading))
                     heading_fusion_source = "compass"
-                    if motion_heading is not None:
-                        # Compass-dominant fusion with motion as secondary stabilizer.
-                        target_heading = blend_heading(target_heading, motion_heading, 0.2)
-                        heading_fusion_source = "fused"
-                elif motion_heading is not None:
-                    target_heading = motion_heading
-                    heading_fusion_source = "motion"
 
                 if target_heading is not None:
                     if state.fused_heading_deg is None:
