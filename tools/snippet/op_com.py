@@ -8,6 +8,7 @@ and serves a live XY graph in a browser.
 from __future__ import annotations
 
 import json
+import math
 import sys
 import threading
 import time
@@ -22,6 +23,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from navisar.sensors.optical_flow import MTF01OpticalFlowReader
+from navisar.sensors.compass import CompassReader
 
 DEFAULT_PORT = "/dev/ttyAMA3"
 DEFAULT_BAUD = 115200
@@ -35,6 +37,7 @@ DEFAULT_DEADBAND = 0.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 0.6
 DEFAULT_PRINT_EVERY = 1
 DEFAULT_TERMINAL_MONITOR_HZ = 2.0
+DEFAULT_COMPASS_HZ = 20.0
 
 # Normal run config (no CLI needed). Edit here if required.
 RUN_PORT = DEFAULT_PORT
@@ -53,6 +56,9 @@ RUN_HEARTBEAT_INTERVAL_S = DEFAULT_HEARTBEAT_INTERVAL_S
 RUN_PRINT_SAMPLES = True
 RUN_PRINT_EVERY = DEFAULT_PRINT_EVERY
 RUN_TERMINAL_MONITOR_HZ = DEFAULT_TERMINAL_MONITOR_HZ
+RUN_COMPASS_ENABLED = True
+RUN_COMPASS_BUS = 1
+RUN_COMPASS_HZ = DEFAULT_COMPASS_HZ
 
 HTML_PAGE = """<!doctype html>
 <html lang="en">
@@ -126,7 +132,7 @@ HTML_PAGE = """<!doctype html>
       return [min - pad, max + pad];
     }}
 
-    function draw(points) {{
+    function draw(points, headingDeg) {{
       const w = canvas.width;
       const h = canvas.height;
       const pad = 36;
@@ -191,13 +197,38 @@ HTML_PAGE = """<!doctype html>
       }});
       ctx.stroke();
 
-      const [lx, ly] = points[points.length - 1];
-      const lpx = toPx(lx);
+      const [_lx, ly] = points[points.length - 1];
+      // Stick heading marker to Y-axis (x = 0), move only by integrated Y.
+      const lpx = toPx(0);
       const lpy = toPy(ly);
-      ctx.fillStyle = "#ef4444";
-      ctx.beginPath();
-      ctx.arc(lpx, lpy, 5, 0, Math.PI * 2);
-      ctx.fill();
+      const hasHeading = Number.isFinite(Number(headingDeg));
+      if (hasHeading) {{
+        const headingRad = Number(headingDeg) * Math.PI / 180.0;
+        const dx = Math.sin(headingRad);
+        const dy = -Math.cos(headingRad);
+        const len = 14;
+        const wing = 8;
+        const tipX = lpx + dx * len;
+        const tipY = lpy + dy * len;
+        const tailX = lpx - dx * 6;
+        const tailY = lpy - dy * 6;
+        const leftX = tailX + (-dy) * wing * 0.5;
+        const leftY = tailY + dx * wing * 0.5;
+        const rightX = tailX - (-dy) * wing * 0.5;
+        const rightY = tailY - dx * wing * 0.5;
+        ctx.fillStyle = "#ef4444";
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(leftX, leftY);
+        ctx.lineTo(rightX, rightY);
+        ctx.closePath();
+        ctx.fill();
+      }} else {{
+        ctx.fillStyle = "#ef4444";
+        ctx.beginPath();
+        ctx.arc(lpx, lpy, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }}
     }}
 
     function setAxisUi(axis) {{
@@ -226,16 +257,19 @@ HTML_PAGE = """<!doctype html>
       try {{
         const resp = await fetch("/data", {{ cache: "no-store" }});
         const payload = await resp.json();
-        draw(payload.points || []);
-        setAxisUi(payload.axis || {{}});
         const latest = payload.latest || {{}};
+        draw(payload.points || [], latest.heading_deg);
+        setAxisUi(payload.axis || {{}});
         if (payload.points && payload.points.length) {{
           const pkt = latest.packet_count ?? 0;
           const err = latest.reader_error ? ` | error=${{latest.reader_error}}` : "";
+          const heading = Number.isFinite(Number(latest.heading_deg))
+            ? Number(latest.heading_deg).toFixed(1)
+            : "--";
           statusEl.textContent =
             `Points=${{payload.points.length}} | X=${{Number(latest.x || 0).toFixed(3)}} Y=${{Number(latest.y || 0).toFixed(3)}} | ` +
             `flow_vx=${{latest.flow_vx_mps ?? "--"}} flow_vy=${{latest.flow_vy_mps ?? "--"}} m/s ` +
-            `dist=${{latest.distance_m ?? "--"}} m quality=${{latest.flow_q ?? "--"}} packets=${{pkt}}${{err}}`;
+            `hdg=${{heading}} deg dist=${{latest.distance_m ?? "--"}} m quality=${{latest.flow_q ?? "--"}} packets=${{pkt}}${{err}}`;
         }} else {{
           const err = latest.reader_error ? ` (error: ${{latest.reader_error}})` : "";
           statusEl.textContent = `Waiting for optical flow data...${{err}}`;
@@ -303,10 +337,12 @@ class SharedState:
             "flow_ok": None,
             "distance_mm": None,
             "distance_m": None,
+            "heading_deg": None,
             "packet_count": 0,
             "raw_bytes": 0,
             "last_sample_time_s": None,
             "reader_error": None,
+            "compass_error": None,
         }
 
     def reset_origin(self) -> None:
@@ -327,6 +363,46 @@ def apply_deadband(v: float, threshold: float) -> float:
     if abs(v) < threshold:
         return 0.0
     return v
+
+
+def rotate_body_velocity_to_world(vx_body: float, vy_body: float, heading_deg: float | None) -> tuple[float, float]:
+    """Rotate body-frame velocity into world frame using compass heading."""
+    if heading_deg is None or not math.isfinite(float(heading_deg)):
+        return vx_body, vy_body
+    h = math.radians(float(heading_deg))
+    sin_h = math.sin(h)
+    cos_h = math.cos(h)
+    world_x = vx_body * sin_h + vy_body * cos_h
+    world_y = vx_body * cos_h - vy_body * sin_h
+    return world_x, world_y
+
+
+def compass_loop(state: SharedState, preferred_bus: int, hz: float) -> None:
+    interval_s = 1.0 / max(1.0, float(hz))
+    reader = None
+    try:
+        reader = CompassReader(preferred_bus=preferred_bus)
+        while True:
+            try:
+                heading_deg, _mg = reader.read_milligauss()
+                with state.lock:
+                    state.latest["heading_deg"] = float(heading_deg)
+                    state.latest["compass_error"] = None
+            except Exception as exc:
+                with state.lock:
+                    state.latest["compass_error"] = str(exc)
+            time.sleep(interval_s)
+    except Exception as exc:
+        with state.lock:
+            state.latest["compass_error"] = str(exc)
+        while True:
+            time.sleep(1.0)
+    finally:
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception:
+                pass
 
 
 def optical_reader_loop(
@@ -397,6 +473,9 @@ def optical_reader_loop(
                 fx = apply_deadband(fx, deadband)
                 fy = apply_deadband(fy, deadband)
 
+                heading_deg = state.latest.get("heading_deg")
+                fx, fy = rotate_body_velocity_to_world(fx, fy, heading_deg)
+
                 state.flow_ema_x = (ema_alpha * fx) + ((1.0 - ema_alpha) * state.flow_ema_x)
                 state.flow_ema_y = (ema_alpha * fy) + ((1.0 - ema_alpha) * state.flow_ema_y)
 
@@ -419,10 +498,12 @@ def optical_reader_loop(
                         if getattr(sample, "distance_mm", None) is not None
                         else None
                     ),
+                    "heading_deg": heading_deg,
                     "packet_count": packet_count,
                     "raw_bytes": None,
                     "last_sample_time_s": time.time(),
                     "reader_error": None,
+                    "compass_error": state.latest.get("compass_error"),
                 }
 
                 if print_samples and packet_count % max(1, int(print_every)) == 0:
@@ -536,6 +617,18 @@ def main() -> None:
     alpha = min(1.0, max(0.0, float(RUN_EMA_ALPHA)))
     state = SharedState(max_points=max(20, int(RUN_HISTORY)))
 
+    if RUN_COMPASS_ENABLED:
+        compass_thread = threading.Thread(
+            target=compass_loop,
+            kwargs={
+                "state": state,
+                "preferred_bus": int(RUN_COMPASS_BUS),
+                "hz": float(RUN_COMPASS_HZ),
+            },
+            daemon=True,
+        )
+        compass_thread.start()
+
     reader = threading.Thread(
         target=optical_reader_loop,
         kwargs={
@@ -575,12 +668,14 @@ def main() -> None:
             raw_bytes = int(latest.get("raw_bytes") or 0)
             flow_vx = latest.get("flow_vx")
             flow_vy = latest.get("flow_vy")
+            heading = latest.get("heading_deg")
             flow_q = latest.get("flow_q")
             flow_ok = latest.get("flow_ok")
             x = float(latest.get("x") or 0.0)
             y = float(latest.get("y") or 0.0)
             last_sample_time_s = latest.get("last_sample_time_s")
             reader_error = latest.get("reader_error")
+            compass_error = latest.get("compass_error")
             if isinstance(last_sample_time_s, (int, float)):
                 age_s = max(0.0, time.time() - float(last_sample_time_s))
                 age_text = f"{age_s:.2f}s"
@@ -588,9 +683,10 @@ def main() -> None:
                 age_text = "n/a"
             print(
                 f"[{ts}] live raw_bytes={raw_bytes} packets={pkt} "
-                f"flow_vx={flow_vx} flow_vy={flow_vy} q={flow_q} ok={flow_ok} "
+                f"flow_vx={flow_vx} flow_vy={flow_vy} hdg={heading} q={flow_q} ok={flow_ok} "
                 f"x={x:.3f} y={y:.3f} sample_age={age_text}"
-                + (f" error={reader_error}" if reader_error else ""),
+                + (f" error={reader_error}" if reader_error else "")
+                + (f" compass_error={compass_error}" if compass_error else ""),
                 flush=True,
             )
             time.sleep(monitor_interval_s)

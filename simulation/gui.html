@@ -878,6 +878,22 @@
         return (c - o + 540) % 360 - 180;
       };
 
+      const rotateOpticalVelocityByHeading = (vxBody, vyBody, headingDeg) => {
+        const vx = Number(vxBody);
+        const vy = Number(vyBody);
+        const hdg = Number(headingDeg);
+        if (!Number.isFinite(vx) || !Number.isFinite(vy) || !Number.isFinite(hdg)) {
+          return { vx, vy };
+        }
+        const rad = (hdg * Math.PI) / 180;
+        const sinH = Math.sin(rad);
+        const cosH = Math.cos(rad);
+        // Body frame -> local EN frame: body X forward, body Y right.
+        const localX = vx * sinH + vy * cosH; // east
+        const localY = vx * cosH - vy * sinH; // north
+        return { vx: localX, vy: localY };
+      };
+
       const setText = (id, value, digits) => {
         const el = document.getElementById(id);
         if (el) el.textContent = fmt(value, digits);
@@ -2492,13 +2508,28 @@
           setText("of-vy", opt?.flow_vy, 0);
           setText("of-q", opt?.flow_q, 0);
 
+          const realCompassHeading = wrapHeading(
+            asFiniteNumber(
+              headingFromMag(
+                data.compass?.incoming?.x_mg,
+                data.compass?.incoming?.y_mg
+              ),
+              data.compass?.incoming?.heading_deg
+            )
+          );
+
           const isOptical = data?.source === "optical_flow" || String(data?.mode || "").startsWith("optical_flow");
-          const rawVx = isOptical
+          let rawVx = isOptical
             ? asFiniteNumber(opt?.speed_x, opt?.flow_vx, 0) || 0
             : asFiniteNumber(data.camera?.vx, 0) || 0;
-          const rawVy = isOptical
+          let rawVy = isOptical
             ? asFiniteNumber(opt?.speed_y, opt?.flow_vy, 0) || 0
             : asFiniteNumber(data.camera?.vy, 0) || 0;
+          if (isOptical && Number.isFinite(realCompassHeading)) {
+            const rotated = rotateOpticalVelocityByHeading(rawVx, rawVy, realCompassHeading);
+            rawVx = Number.isFinite(rotated.vx) ? rotated.vx : rawVx;
+            rawVy = Number.isFinite(rotated.vy) ? rotated.vy : rawVy;
+          }
           const opticalHeightM = asFiniteNumber(
             opt?.height_m,
             optOut?.distance_m,
@@ -2586,15 +2617,6 @@
             data.compass?.incoming?.heading_deg,
             data.sensors?.attitude?.yaw ? data.sensors.attitude.yaw * 57.3 : null
           );
-          const realCompassHeading = wrapHeading(
-            asFiniteNumber(
-              headingFromMag(
-                data.compass?.incoming?.x_mg,
-                data.compass?.incoming?.y_mg
-              ),
-              data.compass?.incoming?.heading_deg
-            )
-          );
           if (Number.isFinite(realCompassHeading)) {
             compassFusionState.realLast = realCompassHeading;
           }
@@ -2632,6 +2654,7 @@
             voHeadingFromDelta
           ));
           const opticalMotionHeading = wrapHeading(asFiniteNumber(
+            headingFromVelocity(rawVx, rawVy, 0.02),
             headingFromVelocity(opt?.speed_x, opt?.speed_y, 0.02),
             headingFromVelocity(opt?.flow_vx, opt?.flow_vy, 0.02)
           ));
