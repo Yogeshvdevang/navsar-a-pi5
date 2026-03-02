@@ -37,7 +37,8 @@ DEFAULT_DEADBAND = 0.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 0.6
 DEFAULT_PRINT_EVERY = 1
 DEFAULT_TERMINAL_MONITOR_HZ = 2.0
-DEFAULT_COMPASS_HZ = 20.0
+DEFAULT_COMPASS_HZ = 100
+DEFAULT_HEADING_SMOOTH_ALPHA = 0.25
 
 # Normal run config (no CLI needed). Edit here if required.
 RUN_PORT = DEFAULT_PORT
@@ -59,6 +60,7 @@ RUN_TERMINAL_MONITOR_HZ = DEFAULT_TERMINAL_MONITOR_HZ
 RUN_COMPASS_ENABLED = True
 RUN_COMPASS_BUS = 1
 RUN_COMPASS_HZ = DEFAULT_COMPASS_HZ
+RUN_HEADING_SMOOTH_ALPHA = DEFAULT_HEADING_SMOOTH_ALPHA
 
 HTML_PAGE = """<!doctype html>
 <html lang="en">
@@ -82,6 +84,7 @@ HTML_PAGE = """<!doctype html>
     .axis-tag {{ font-size: 13px; color: #0f172a; }}
     canvas {{ width: 100%; height: 560px; border: 1px solid #d8e0ee; border-radius: 8px; background: #ffffff; }}
     .hint {{ margin-top: 8px; color: #475569; font-size: 13px; }}
+    .legend {{ margin-top: 6px; color: #334155; font-size: 13px; }}
   </style>
 </head>
 <body>
@@ -105,6 +108,9 @@ HTML_PAGE = """<!doctype html>
       <canvas id="plot" width="980" height="560"></canvas>
       <p class="hint">
         Move sensor left/right/up/down: path should move left/right/up/down on graph.
+      </p>
+      <p class="legend">
+        Arrow legend: Blue = world velocity vector, Red = heading/yaw direction, Black = current endpoint direction marker.
       </p>
     </div>
   </div>
@@ -132,10 +138,38 @@ HTML_PAGE = """<!doctype html>
       return [min - pad, max + pad];
     }}
 
-    function draw(points, headingDeg) {{
-      const w = canvas.width;
-      const h = canvas.height;
-      const pad = 36;
+    function drawArrow(x, y, angleRad, len, tailBack, shaftLen, wing, shaftColor, headColor, lineWidth) {{
+      const dx = Math.sin(angleRad);
+      const dy = -Math.cos(angleRad);
+      const tipX = x + dx * len;
+      const tipY = y + dy * len;
+      const tailX = x - dx * tailBack;
+      const tailY = y - dy * tailBack;
+      const headBaseX = tipX - dx * shaftLen;
+      const headBaseY = tipY - dy * shaftLen;
+      const nx = -dy;
+      const ny = dx;
+
+      ctx.strokeStyle = shaftColor;
+      ctx.lineWidth = lineWidth;
+      ctx.beginPath();
+      ctx.moveTo(tailX, tailY);
+      ctx.lineTo(headBaseX, headBaseY);
+      ctx.stroke();
+
+      ctx.fillStyle = headColor;
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(headBaseX + nx * wing, headBaseY + ny * wing);
+      ctx.lineTo(headBaseX - nx * wing, headBaseY - ny * wing);
+      ctx.closePath();
+      ctx.fill();
+    }}
+
+      function draw(points, headingDeg, vxWorldMps, vyWorldMps) {{
+        const w = canvas.width;
+        const h = canvas.height;
+        const pad = 36;
 
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = "#fff";
@@ -182,9 +216,9 @@ HTML_PAGE = """<!doctype html>
 
       ctx.fillStyle = "#334155";
       ctx.font = "12px sans-serif";
-      ctx.fillText("X", w - pad + 6, oy - 2);
-      ctx.fillText("Y", ox + 6, pad - 8);
-      ctx.fillText("Origin (0,0)", ox + 8, oy - 8);
+      ctx.fillText("Longitude East (+X)", w - pad - 130, oy - 8);
+      ctx.fillText("Latitude North (+Y)", ox + 6, pad - 8);
+      ctx.fillText("Home Lat/Lon (0,0)", ox + 8, oy - 8);
 
       ctx.strokeStyle = "#16a34a";
       ctx.lineWidth = 2.2;
@@ -197,38 +231,82 @@ HTML_PAGE = """<!doctype html>
       }});
       ctx.stroke();
 
-      const [_lx, ly] = points[points.length - 1];
-      // Stick heading marker to Y-axis (x = 0), move only by integrated Y.
-      const lpx = toPx(0);
+      const [lx, ly] = points[points.length - 1];
+      const lpx = toPx(lx);
       const lpy = toPy(ly);
       const hasHeading = Number.isFinite(Number(headingDeg));
+      // 3D-like velocity vector anchored at endpoint using world-frame vx/vy.
+      const vx = Number(vxWorldMps);
+      const vy = Number(vyWorldMps);
+      const hasVel = Number.isFinite(vx) && Number.isFinite(vy);
+      if (hasVel) {{
+        const maxVelRef = 1.0;
+        const normX = Math.max(-1, Math.min(1, vx / maxVelRef));
+        const normY = Math.max(-1, Math.min(1, vy / maxVelRef));
+        const tipX = lpx + normX * (w - 2 * pad) * 0.12;
+        const tipY = lpy - normY * (h - 2 * pad) * 0.12;
+        const dirX = tipX - lpx;
+        const dirY = tipY - lpy;
+        const mag = Math.hypot(dirX, dirY);
+        if (mag > 1e-6) {{
+          const ux = dirX / mag;
+          const uy = dirY / mag;
+          const nx = -uy;
+          const ny = ux;
+          const head = 11;
+          const wing = 6;
+          const baseX = tipX - ux * head;
+          const baseY = tipY - uy * head;
+
+          ctx.strokeStyle = "rgba(15,23,42,0.20)";
+          ctx.lineWidth = 8;
+          ctx.beginPath();
+          ctx.moveTo(lpx + 2, lpy + 2);
+          ctx.lineTo(baseX + 2, baseY + 2);
+          ctx.stroke();
+
+          ctx.strokeStyle = "#2563eb";
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.moveTo(lpx, lpy);
+          ctx.lineTo(baseX, baseY);
+          ctx.stroke();
+
+          ctx.fillStyle = "#1d4ed8";
+          ctx.beginPath();
+          ctx.moveTo(tipX, tipY);
+          ctx.lineTo(baseX + nx * wing, baseY + ny * wing);
+          ctx.lineTo(baseX - nx * wing, baseY - ny * wing);
+          ctx.closePath();
+          ctx.fill();
+        }}
+      }}
+
+      // Heading arrow from endpoint (drone z-rotation direction).
       if (hasHeading) {{
         const headingRad = Number(headingDeg) * Math.PI / 180.0;
-        const dx = Math.sin(headingRad);
-        const dy = -Math.cos(headingRad);
-        const len = 14;
-        const wing = 8;
-        const tipX = lpx + dx * len;
-        const tipY = lpy + dy * len;
-        const tailX = lpx - dx * 6;
-        const tailY = lpy - dy * 6;
-        const leftX = tailX + (-dy) * wing * 0.5;
-        const leftY = tailY + dx * wing * 0.5;
-        const rightX = tailX - (-dy) * wing * 0.5;
-        const rightY = tailY - dx * wing * 0.5;
-        ctx.fillStyle = "#ef4444";
-        ctx.beginPath();
-        ctx.moveTo(tipX, tipY);
-        ctx.lineTo(leftX, leftY);
-        ctx.lineTo(rightX, rightY);
-        ctx.closePath();
-        ctx.fill();
+        drawArrow(lpx, lpy, headingRad, 26, 8, 10, 4, "#dc2626", "#ef4444", 2.5);
+      }}
+
+      // Endpoint arrow marker (replace dot).
+      const markerHeadingDeg = hasHeading
+        ? Number(headingDeg)
+        : (hasVel ? ((Math.atan2(vx, vy) * 180.0 / Math.PI + 360.0) % 360.0) : null);
+      if (Number.isFinite(markerHeadingDeg)) {{
+        const a = Number(markerHeadingDeg) * Math.PI / 180.0;
+        drawArrow(lpx, lpy, a, 16, 6, 7, 3, "#030712", "#111827", 2.2);
       }} else {{
-        ctx.fillStyle = "#ef4444";
+        ctx.fillStyle = "#111827";
         ctx.beginPath();
-        ctx.arc(lpx, lpy, 5, 0, Math.PI * 2);
+        ctx.arc(lpx, lpy, 3, 0, Math.PI * 2);
         ctx.fill();
       }}
+      const hdgText = hasHeading ? Number(headingDeg).toFixed(1) : "--";
+      const vxText = hasVel ? vx.toFixed(3) : "--";
+      const vyText = hasVel ? vy.toFixed(3) : "--";
+      ctx.fillStyle = "#0f172a";
+      ctx.font = "12px monospace";
+      ctx.fillText(`vx=${{vxText}} m/s  vy=${{vyText}} m/s  zrot=${{hdgText}} deg`, lpx + 10, lpy - 12);
     }}
 
     function setAxisUi(axis) {{
@@ -258,18 +336,22 @@ HTML_PAGE = """<!doctype html>
         const resp = await fetch("/data", {{ cache: "no-store" }});
         const payload = await resp.json();
         const latest = payload.latest || {{}};
-        draw(payload.points || [], latest.heading_deg);
+        draw(payload.points || [], latest.heading_plot_deg, latest.vx_world_mps, latest.vy_world_mps);
         setAxisUi(payload.axis || {{}});
         if (payload.points && payload.points.length) {{
           const pkt = latest.packet_count ?? 0;
           const err = latest.reader_error ? ` | error=${{latest.reader_error}}` : "";
-          const heading = Number.isFinite(Number(latest.heading_deg))
-            ? Number(latest.heading_deg).toFixed(1)
+          const zrot = Number.isFinite(Number(latest.heading_plot_deg))
+            ? Number(latest.heading_plot_deg).toFixed(1)
             : "--";
+          const chdg = Number.isFinite(Number(latest.compass_heading_deg))
+            ? Number(latest.compass_heading_deg).toFixed(1)
+            : "--";
+          const hsrc = latest.heading_source || "none";
           statusEl.textContent =
-            `Points=${{payload.points.length}} | X=${{Number(latest.x || 0).toFixed(3)}} Y=${{Number(latest.y || 0).toFixed(3)}} | ` +
+            `Points=${{payload.points.length}} | Lon(East)=${{Number(latest.x || 0).toFixed(3)}} m Lat(North)=${{Number(latest.y || 0).toFixed(3)}} m | ` +
             `flow_vx=${{latest.flow_vx_mps ?? "--"}} flow_vy=${{latest.flow_vy_mps ?? "--"}} m/s ` +
-            `hdg=${{heading}} deg dist=${{latest.distance_m ?? "--"}} m quality=${{latest.flow_q ?? "--"}} packets=${{pkt}}${{err}}`;
+            `zrot=${{zrot}} deg src=${{hsrc}} compass=${{chdg}} deg dist=${{latest.distance_m ?? "--"}} m quality=${{latest.flow_q ?? "--"}} packets=${{pkt}}${{err}}`;
         }} else {{
           const err = latest.reader_error ? ` (error: ${{latest.reader_error}})` : "";
           statusEl.textContent = `Waiting for optical flow data...${{err}}`;
@@ -326,6 +408,7 @@ class SharedState:
         self.last_time_ms: int | None = None
         self.flow_ema_x = 0.0
         self.flow_ema_y = 0.0
+        self.fused_heading_deg: float | None = None
         self.latest: dict[str, float | int | None] = {
             "x": 0.0,
             "y": 0.0,
@@ -337,7 +420,11 @@ class SharedState:
             "flow_ok": None,
             "distance_mm": None,
             "distance_m": None,
-            "heading_deg": None,
+            "compass_heading_deg": None,
+            "heading_plot_deg": None,
+            "heading_source": "none",
+            "vx_world_mps": 0.0,
+            "vy_world_mps": 0.0,
             "packet_count": 0,
             "raw_bytes": 0,
             "last_sample_time_s": None,
@@ -354,6 +441,7 @@ class SharedState:
             self.last_time_ms = None
             self.flow_ema_x = 0.0
             self.flow_ema_y = 0.0
+            self.fused_heading_deg = None
             self.latest["x"] = 0.0
             self.latest["y"] = 0.0
             self.latest["reader_error"] = None
@@ -365,33 +453,32 @@ def apply_deadband(v: float, threshold: float) -> float:
     return v
 
 
-def rotate_body_velocity_to_world(vx_body: float, vy_body: float, heading_deg: float | None) -> tuple[float, float]:
-    """Rotate body-frame velocity into world frame using compass heading."""
-    if heading_deg is None or not math.isfinite(float(heading_deg)):
-        return vx_body, vy_body
-    h = math.radians(float(heading_deg))
-    sin_h = math.sin(h)
-    cos_h = math.cos(h)
-    world_x = vx_body * sin_h + vy_body * cos_h
-    world_y = vx_body * cos_h - vy_body * sin_h
-    return world_x, world_y
+def wrap_heading(deg: float) -> float:
+    return (float(deg) + 360.0) % 360.0
+
+
+def blend_heading(base_deg: float, target_deg: float, alpha: float) -> float:
+    b = wrap_heading(base_deg)
+    t = wrap_heading(target_deg)
+    d = (t - b + 540.0) % 360.0 - 180.0
+    return wrap_heading(b + float(alpha) * d)
 
 
 def compass_loop(state: SharedState, preferred_bus: int, hz: float) -> None:
-    interval_s = 1.0 / max(1.0, float(hz))
+    sleep_s = 1.0 / max(1.0, float(hz))
     reader = None
     try:
         reader = CompassReader(preferred_bus=preferred_bus)
         while True:
             try:
-                heading_deg, _mg = reader.read_milligauss()
+                heading, _mg = reader.read_milligauss()
                 with state.lock:
-                    state.latest["heading_deg"] = float(heading_deg)
+                    state.latest["compass_heading_deg"] = wrap_heading(float(heading))
                     state.latest["compass_error"] = None
             except Exception as exc:
                 with state.lock:
                     state.latest["compass_error"] = str(exc)
-            time.sleep(interval_s)
+            time.sleep(sleep_s)
     except Exception as exc:
         with state.lock:
             state.latest["compass_error"] = str(exc)
@@ -403,6 +490,8 @@ def compass_loop(state: SharedState, preferred_bus: int, hz: float) -> None:
                 reader.close()
             except Exception:
                 pass
+
+
 
 
 def optical_reader_loop(
@@ -459,29 +548,73 @@ def optical_reader_loop(
                         dt = 1.0 / max(1.0, float(read_hz))
                 state.last_time_ms = now_ms
 
-                # Sensor provides flow_vx/flow_vy directly in m/s.
-                fx = float(getattr(sample, "flow_vx", 0.0))
-                fy = float(getattr(sample, "flow_vy", 0.0))
+                flow_vx_mps = float(getattr(sample, "flow_vx", 0.0))
+                flow_vy_mps = float(getattr(sample, "flow_vy", 0.0))
+                vx_body = flow_vx_mps
+                vy_body = flow_vy_mps
 
                 if state.swap_xy:
-                    fx, fy = fy, fx
+                    vx_body, vy_body = vy_body, vx_body
                 if state.invert_x:
-                    fx = -fx
+                    vx_body = -vx_body
                 if state.invert_y:
-                    fy = -fy
+                    vy_body = -vy_body
 
-                fx = apply_deadband(fx, deadband)
-                fy = apply_deadband(fy, deadband)
+                vx_body = apply_deadband(vx_body, deadband)
+                vy_body = apply_deadband(vy_body, deadband)
 
-                heading_deg = state.latest.get("heading_deg")
-                fx, fy = rotate_body_velocity_to_world(fx, fy, heading_deg)
+                # Required transform:
+                # psi = pi/2 - heading_rad
+                # [vx_world, vy_world]^T = R(psi) @ [vx_body, vy_body]^T
+                compass_heading = state.latest.get("compass_heading_deg")
+                if compass_heading is not None and math.isfinite(float(compass_heading)):
+                    heading_rad = math.radians(float(compass_heading))
+                    psi = math.pi / 2.0 - heading_rad
+                    c = math.cos(psi)
+                    s = math.sin(psi)
+                    vx_world = c * vx_body - s * vy_body
+                    vy_world = s * vx_body + c * vy_body
+                    heading_source = "compass_rot"
+                else:
+                    # Fallback if compass missing: treat body frame as world frame.
+                    vx_world = vx_body
+                    vy_world = vy_body
+                    heading_source = "flow_only"
 
-                state.flow_ema_x = (ema_alpha * fx) + ((1.0 - ema_alpha) * state.flow_ema_x)
-                state.flow_ema_y = (ema_alpha * fy) + ((1.0 - ema_alpha) * state.flow_ema_y)
+                state.flow_ema_x = (ema_alpha * vx_world) + ((1.0 - ema_alpha) * state.flow_ema_x)
+                state.flow_ema_y = (ema_alpha * vy_world) + ((1.0 - ema_alpha) * state.flow_ema_y)
 
                 state.x += state.flow_ema_x * dt * gain
                 state.y += state.flow_ema_y * dt * gain
                 state.points.append((state.x, state.y))
+
+                motion_heading = (
+                    wrap_heading(math.degrees(math.atan2(state.flow_ema_x, state.flow_ema_y)))
+                    if math.hypot(state.flow_ema_x, state.flow_ema_y) > 1e-6
+                    else None
+                )
+                target_heading = None
+                heading_fusion_source = "hold"
+                if compass_heading is not None and math.isfinite(float(compass_heading)):
+                    target_heading = wrap_heading(float(compass_heading))
+                    heading_fusion_source = "compass"
+                    if motion_heading is not None:
+                        # Compass-dominant fusion with motion as secondary stabilizer.
+                        target_heading = blend_heading(target_heading, motion_heading, 0.2)
+                        heading_fusion_source = "fused"
+                elif motion_heading is not None:
+                    target_heading = motion_heading
+                    heading_fusion_source = "motion"
+
+                if target_heading is not None:
+                    if state.fused_heading_deg is None:
+                        state.fused_heading_deg = target_heading
+                    else:
+                        state.fused_heading_deg = blend_heading(
+                            state.fused_heading_deg,
+                            target_heading,
+                            RUN_HEADING_SMOOTH_ALPHA,
+                        )
 
                 state.latest = {
                     "x": state.x,
@@ -498,7 +631,15 @@ def optical_reader_loop(
                         if getattr(sample, "distance_mm", None) is not None
                         else None
                     ),
-                    "heading_deg": heading_deg,
+                    "compass_heading_deg": (
+                        float(compass_heading)
+                        if compass_heading is not None and math.isfinite(float(compass_heading))
+                        else None
+                    ),
+                    "heading_plot_deg": state.fused_heading_deg,
+                    "heading_source": f"{heading_source}/{heading_fusion_source}",
+                    "vx_world_mps": state.flow_ema_x,
+                    "vy_world_mps": state.flow_ema_y,
                     "packet_count": packet_count,
                     "raw_bytes": None,
                     "last_sample_time_s": time.time(),
@@ -545,67 +686,75 @@ def make_handler(
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            path = urlparse(self.path).path
-            if path in ("/", "/index.html"):
-                body = HTML_PAGE.format(
-                    serial_port=serial_port,
-                    baud_rate=baud_rate,
-                    poll_hz=poll_hz,
-                    poll_ms=poll_ms,
-                ).encode("utf-8")
-                self._send(200, "text/html; charset=utf-8", body)
-                return
+            try:
+                path = urlparse(self.path).path
+                if path in ("/", "/index.html"):
+                    body = HTML_PAGE.format(
+                        serial_port=serial_port,
+                        baud_rate=baud_rate,
+                        poll_hz=poll_hz,
+                        poll_ms=poll_ms,
+                    ).encode("utf-8")
+                    self._send(200, "text/html; charset=utf-8", body)
+                    return
 
-            if path == "/data":
-                with state.lock:
-                    payload = {
-                        "points": list(state.points),
-                        "latest": dict(state.latest),
-                        "axis": {
-                            "swap_xy": state.swap_xy,
-                            "invert_x": state.invert_x,
-                            "invert_y": state.invert_y,
-                        },
-                    }
-                body = json.dumps(payload).encode("utf-8")
-                self._send(200, "application/json", body)
-                return
+                if path == "/data":
+                    with state.lock:
+                        payload = {
+                            "points": list(state.points),
+                            "latest": dict(state.latest),
+                            "axis": {
+                                "swap_xy": state.swap_xy,
+                                "invert_x": state.invert_x,
+                                "invert_y": state.invert_y,
+                            },
+                        }
+                    body = json.dumps(payload).encode("utf-8")
+                    self._send(200, "application/json", body)
+                    return
 
-            self._send(404, "text/plain; charset=utf-8", b"Not Found")
+                self._send(404, "text/plain; charset=utf-8", b"Not Found")
+            except Exception as exc:
+                body = json.dumps({"ok": False, "error": str(exc)}).encode("utf-8")
+                self._send(500, "application/json", body)
 
         def do_POST(self) -> None:
-            path = urlparse(self.path).path
-            if path == "/reset":
-                state.reset_origin()
-                body = b'{"ok": true}'
-                self._send(200, "application/json", body)
-                return
-            if path == "/axis":
-                length = int(self.headers.get("Content-Length", "0") or 0)
-                raw = self.rfile.read(length) if length > 0 else b"{}"
-                try:
-                    req = json.loads(raw.decode("utf-8"))
-                except json.JSONDecodeError:
-                    req = {}
-                with state.lock:
-                    if "swap_xy" in req:
-                        state.swap_xy = bool(req.get("swap_xy"))
-                    if "invert_x" in req:
-                        state.invert_x = bool(req.get("invert_x"))
-                    if "invert_y" in req:
-                        state.invert_y = bool(req.get("invert_y"))
-                    payload = {
-                        "ok": True,
-                        "axis": {
-                            "swap_xy": state.swap_xy,
-                            "invert_x": state.invert_x,
-                            "invert_y": state.invert_y,
-                        },
-                    }
-                body = json.dumps(payload).encode("utf-8")
-                self._send(200, "application/json", body)
-                return
-            self._send(404, "text/plain; charset=utf-8", b"Not Found")
+            try:
+                path = urlparse(self.path).path
+                if path == "/reset":
+                    state.reset_origin()
+                    body = b'{"ok": true}'
+                    self._send(200, "application/json", body)
+                    return
+                if path == "/axis":
+                    length = int(self.headers.get("Content-Length", "0") or 0)
+                    raw = self.rfile.read(length) if length > 0 else b"{}"
+                    try:
+                        req = json.loads(raw.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        req = {}
+                    with state.lock:
+                        if "swap_xy" in req:
+                            state.swap_xy = bool(req.get("swap_xy"))
+                        if "invert_x" in req:
+                            state.invert_x = bool(req.get("invert_x"))
+                        if "invert_y" in req:
+                            state.invert_y = bool(req.get("invert_y"))
+                        payload = {
+                            "ok": True,
+                            "axis": {
+                                "swap_xy": state.swap_xy,
+                                "invert_x": state.invert_x,
+                                "invert_y": state.invert_y,
+                            },
+                        }
+                    body = json.dumps(payload).encode("utf-8")
+                    self._send(200, "application/json", body)
+                    return
+                self._send(404, "text/plain; charset=utf-8", b"Not Found")
+            except Exception as exc:
+                body = json.dumps({"ok": False, "error": str(exc)}).encode("utf-8")
+                self._send(500, "application/json", body)
 
         def log_message(self, _fmt: str, *_args: object) -> None:
             return
@@ -653,9 +802,26 @@ def main() -> None:
         baud_rate=int(RUN_BAUD),
         poll_hz=float(RUN_POLL_HZ),
     )
-    server = ThreadingHTTPServer((RUN_HOST, int(RUN_WEB_PORT)), handler)
-    url = f"http://127.0.0.1:{int(RUN_WEB_PORT)}/"
+    preferred_port = int(RUN_WEB_PORT)
+    server = None
+    bound_port = None
+    for port_try in range(preferred_port, preferred_port + 20):
+        try:
+            server = ThreadingHTTPServer((RUN_HOST, port_try), handler)
+            bound_port = port_try
+            break
+        except OSError:
+            continue
+    if server is None or bound_port is None:
+        raise RuntimeError(
+            f"Failed to bind web server on {RUN_HOST} ports {preferred_port}-{preferred_port + 19}."
+        )
+    url = f"http://127.0.0.1:{bound_port}/"
     print(f"Optical flow graph server started: {url}")
+    if bound_port != preferred_port:
+        print(
+            f"Note: preferred port {preferred_port} was busy; using {bound_port} instead."
+        )
     print("Press Ctrl+C to stop.")
     monitor_interval_s = 1.0 / max(0.1, float(RUN_TERMINAL_MONITOR_HZ))
 
@@ -668,9 +834,9 @@ def main() -> None:
             raw_bytes = int(latest.get("raw_bytes") or 0)
             flow_vx = latest.get("flow_vx")
             flow_vy = latest.get("flow_vy")
-            heading = latest.get("heading_deg")
             flow_q = latest.get("flow_q")
             flow_ok = latest.get("flow_ok")
+            compass_heading = latest.get("compass_heading_deg")
             x = float(latest.get("x") or 0.0)
             y = float(latest.get("y") or 0.0)
             last_sample_time_s = latest.get("last_sample_time_s")
@@ -683,7 +849,8 @@ def main() -> None:
                 age_text = "n/a"
             print(
                 f"[{ts}] live raw_bytes={raw_bytes} packets={pkt} "
-                f"flow_vx={flow_vx} flow_vy={flow_vy} hdg={heading} q={flow_q} ok={flow_ok} "
+                f"flow_vx={flow_vx} flow_vy={flow_vy} zrot={latest.get('heading_plot_deg')} "
+                f"compass={compass_heading} src={latest.get('heading_source')} q={flow_q} ok={flow_ok} "
                 f"x={x:.3f} y={y:.3f} sample_age={age_text}"
                 + (f" error={reader_error}" if reader_error else "")
                 + (f" compass_error={compass_error}" if compass_error else ""),
