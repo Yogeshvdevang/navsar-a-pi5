@@ -65,13 +65,13 @@ optical_flow_mavlink:
   print: true
   range_min_m: 0.01
   range_max_m: 8.0
-  min_quality: 50
+  min_quality: 30
   max_speed_mps: 0.6
   deadband_mps: 0.01
   smoothing_alpha: 0.08
   stationary_speed_mps: 0.03
   stationary_samples: 30
-  stationary_quality_min: 50
+  stationary_quality_min: 30
   speed_scale: 0.01
 optical_flow_vo:
   switch_m: 8.0
@@ -142,6 +142,6 @@ gnss_monitor:
     gcs_severity: warning
     min_interval_s: 2.0
 gps_origin:
-  lat: 0.0
-  lon: 0.0
+  lat: 9.0
+  lon: 56.0
   alt: 0.0

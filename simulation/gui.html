@@ -651,6 +651,11 @@
         <button id="client-rec-download-btn">Download (Fallback)</button>
       </div>
       <div class="gps-origin-note" id="client-rec-status">Client recorder: idle</div>
+      <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">GPS CSV Logger</div>
+      <div class="mode-buttons" id="gps-log-buttons">
+        <button id="gps-log-toggle-btn">Start GPS Log</button>
+      </div>
+      <div class="gps-origin-note" id="gps-log-status">GPS logger: idle</div>
       <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">GPS Mode</div>
       <div class="gps-origin-controls">
         <div class="mode-buttons" id="gps-origin-buttons">
@@ -1167,6 +1172,23 @@
         videoWritable: null,
         writeChain: Promise.resolve(),
       };
+      const gpsCsvLoggerState = {
+        recording: false,
+        startedAt: null,
+        sensorRows: [],
+        pixhawkRows: [],
+      };
+      const gpsCsvColumns = [
+        "timestamp_iso",
+        "timestamp_unix_s",
+        "lat",
+        "lon",
+        "alt_m",
+        "fix_type",
+        "speed_mps",
+        "heading_deg",
+        "sats",
+      ];
 
       const setCameraMode = (useSim) => {
         if (!voStream || !camSim) return;
@@ -1486,20 +1508,48 @@
         const lon = asFiniteNumber(gpsInput?.lon);
         const altM = asFiniteNumber(gpsInput?.alt_m);
         const fixType = asFiniteNumber(gpsInput?.fix_type);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+        if (!isValidGpsLatLon(lat, lon)) return null;
         return { lat, lon, altM, fixType, raw: gpsInput };
       };
 
+      const getRawCalibrationFixFromRuntimeData = (runtimeData) => {
+        const gpsInput = runtimeData?.sensors?.gps_input || {};
+        const lat = asFiniteNumber(gpsInput?.lat);
+        const lon = asFiniteNumber(gpsInput?.lon);
+        const altM = asFiniteNumber(gpsInput?.alt_m);
+        const fixType = asFiniteNumber(gpsInput?.fix_type);
+        if (!isValidGpsLatLon(lat, lon)) return null;
+        return { lat, lon, altM, fixType, raw: gpsInput };
+      };
+
+      const isValidGpsLatLon = (lat, lon) => (
+        Number.isFinite(lat)
+        && Number.isFinite(lon)
+        && Math.abs(lat) <= 90
+        && Math.abs(lon) <= 180
+        && !(Math.abs(lat) < 1e-4 && Math.abs(lon) < 1e-4)
+      );
+
       const getSentCalibrationFixFromRuntimeData = (runtimeData) => {
-        const sent =
-          runtimeData?.outputs?.optical_flow_gps_port
-          || runtimeData?.outputs?.gps_port
-          || {};
-        const lat = asFiniteNumber(sent?.lat);
-        const lon = asFiniteNumber(sent?.lon);
-        const altM = asFiniteNumber(sent?.alt_m);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-        return { lat, lon, altM };
+        const mode = String(runtimeData?.mode || "").trim().toLowerCase();
+        const outputs = runtimeData?.outputs || {};
+        const ordered = [];
+        if (mode === "optical_flow_gps_port") {
+          ordered.push(outputs?.optical_flow_gps_port, outputs?.gps_port);
+        } else if (mode === "gps_port") {
+          ordered.push(outputs?.gps_port, outputs?.optical_flow_gps_port);
+        } else {
+          ordered.push(outputs?.gps_port, outputs?.optical_flow_gps_port);
+        }
+        for (const sent of ordered) {
+          const lat = asFiniteNumber(sent?.lat);
+          const lon = asFiniteNumber(sent?.lon);
+          const altM = asFiniteNumber(sent?.alt_m);
+          if (isValidGpsLatLon(lat, lon)) {
+            return { lat, lon, altM };
+          }
+        }
+        return null;
       };
 
       const renderCalibrationGpsPlot = (force = false) => {
@@ -1676,7 +1726,7 @@
         const lat = Number(fix?.lat);
         const lon = Number(fix?.lon);
         const altM = Number(fix?.altM);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        if (!isValidGpsLatLon(lat, lon)) return;
         const rawState = calibrationGpsState.raw;
         const count = rawState.lats.length;
         if (
@@ -1700,7 +1750,7 @@
         const lat = Number(fix?.lat);
         const lon = Number(fix?.lon);
         const altM = Number(fix?.altM);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        if (!isValidGpsLatLon(lat, lon)) return;
         const sentState = calibrationGpsState.sent;
         const count = sentState.lats.length;
         if (
@@ -1741,8 +1791,12 @@
             return;
           }
           calibrationGpsState.disabledReason = "";
-          const finalFix = getSentCalibrationFixFromRuntimeData(window.__lastData || {});
-          const fix = getRawCalibrationFixFromPayload(payload);
+          const finalFix =
+            getSentCalibrationFixFromRuntimeData(payload)
+            || getSentCalibrationFixFromRuntimeData(window.__lastData || {});
+          const fix =
+            getRawCalibrationFixFromRuntimeData(window.__lastData || {})
+            || getRawCalibrationFixFromPayload(payload);
           if (finalFix) addSentCalibrationGpsFix(finalFix);
           if (fix) addCalibrationGpsFix(fix);
           if (payload?.gps_tuning) {
@@ -1754,12 +1808,13 @@
           const finalPoints = calibrationGpsState.sent.lats.length;
           const rawPoints = calibrationGpsState.raw.lats.length;
           if (finalFix || fix) {
-            const latShow = fix?.lat ?? finalFix?.lat;
-            const lonShow = fix?.lon ?? finalFix?.lon;
-            const altShow = fix?.altM ?? finalFix?.altM;
+            const latShow = finalFix?.lat ?? fix?.lat;
+            const lonShow = finalFix?.lon ?? fix?.lon;
+            const altShow = finalFix?.altM ?? fix?.altM;
             const altText = Number.isFinite(altShow) ? altShow.toFixed(3) : "n/a";
+            const finalSeen = finalFix ? "yes" : "no";
             setCalibrationStatus(
-              `Final GPS (blue): ${finalPoints} pts | GPS sensor raw (green): ${rawPoints} pts | lat=${latShow.toFixed(7)} lon=${lonShow.toFixed(7)} alt=${altText} m`
+              `Final GPS (blue): ${finalPoints} pts | GPS sensor raw (green): ${rawPoints} pts | final_seen=${finalSeen} | lat=${latShow.toFixed(7)} lon=${lonShow.toFixed(7)} alt=${altText} m`
             );
           } else {
             setCalibrationStatus("Calibration GPS graph: waiting for payload...");
@@ -2302,6 +2357,7 @@
         gpsTrajCtx.fillText("X: Longitude  Y: Latitude", rect.width - 190, 32);
       };
 
+
       const drawCorrPlot = () => {
         const rect = resizeCanvas(corrPlot, corrCtx);
         if (!rect) return;
@@ -2579,6 +2635,18 @@
             } else {
               clientRecorderState.dataLines.push(row);
             }
+          }
+          if (gpsCsvLoggerState.recording) {
+            const sensorFix = data?.sensors?.gps_input || null;
+            const pixhawkFix = getPixhawkGpsPortFix(data);
+            const payloadTsS = asFiniteNumber(data?.timestamp);
+            const sensorTsMs = Number.isFinite(payloadTsS) ? payloadTsS * 1000 : Date.now();
+            const pixhawkTsS = asFiniteNumber(pixhawkFix?.time_s, payloadTsS);
+            const pixhawkTsMs = Number.isFinite(pixhawkTsS) ? pixhawkTsS * 1000 : sensorTsMs;
+            const sensorRow = buildGpsCsvRow(sensorTsMs, sensorFix);
+            const pixhawkRow = buildGpsCsvRow(pixhawkTsMs, pixhawkFix);
+            if (sensorRow) gpsCsvLoggerState.sensorRows.push(sensorRow);
+            if (pixhawkRow) gpsCsvLoggerState.pixhawkRows.push(pixhawkRow);
           }
           updateAccessUrl(data);
 
@@ -2976,6 +3044,8 @@
       const clientRecStopBtn = document.getElementById("client-rec-stop-btn");
       const clientRecDownloadBtn = document.getElementById("client-rec-download-btn");
       const clientRecStatusEl = document.getElementById("client-rec-status");
+      const gpsLogToggleBtn = document.getElementById("gps-log-toggle-btn");
+      const gpsLogStatusEl = document.getElementById("gps-log-status");
       const voHeadingButtons = Array.from(document.querySelectorAll("#vo-heading-buttons button"));
       const gpsAutoBtn = document.getElementById("gps-auto-btn");
       const gpsVariableBtn = document.getElementById("gps-variable-btn");
@@ -3015,6 +3085,91 @@
 
       const setClientRecStatus = (text) => {
         if (clientRecStatusEl) clientRecStatusEl.textContent = text;
+      };
+      const setGpsLogStatus = (text) => {
+        if (gpsLogStatusEl) gpsLogStatusEl.textContent = text;
+      };
+
+      const setGpsLogButton = () => {
+        if (!gpsLogToggleBtn) return;
+        gpsLogToggleBtn.textContent = gpsCsvLoggerState.recording ? "Stop GPS Log" : "Start GPS Log";
+      };
+
+      const formatCsvCell = (value) => {
+        if (value == null) return "";
+        const text = String(value);
+        if (text.includes(",") || text.includes("\"") || text.includes("\n")) {
+          return `"${text.replace(/"/g, "\"\"")}"`;
+        }
+        return text;
+      };
+
+      const toCsv = (rows) => {
+        const header = gpsCsvColumns.join(",");
+        const body = rows.map((row) => gpsCsvColumns.map((key) => formatCsvCell(row[key])).join(",")).join("\n");
+        return body ? `${header}\n${body}\n` : `${header}\n`;
+      };
+
+      const getSats = (obj) => {
+        if (!obj) return "";
+        const sats = asFiniteNumber(obj.sats, obj.satellites, obj.sat_count, obj.satCount);
+        return Number.isFinite(sats) ? sats : "";
+      };
+
+      const buildGpsCsvRow = (tsMs, fix) => {
+        if (!fix) return null;
+        const lat = asFiniteNumber(fix.lat);
+        const lon = asFiniteNumber(fix.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+        const ts = Number.isFinite(tsMs) ? tsMs : Date.now();
+        const unixS = ts / 1000;
+        return {
+          timestamp_iso: new Date(ts).toISOString(),
+          timestamp_unix_s: unixS.toFixed(3),
+          lat: lat.toFixed(7),
+          lon: lon.toFixed(7),
+          alt_m: Number.isFinite(asFiniteNumber(fix.alt_m)) ? asFiniteNumber(fix.alt_m).toFixed(3) : "",
+          fix_type: Number.isFinite(asFiniteNumber(fix.fix_type)) ? String(asFiniteNumber(fix.fix_type)) : "",
+          speed_mps: Number.isFinite(asFiniteNumber(fix.speed_mps, fix.speed)) ? asFiniteNumber(fix.speed_mps, fix.speed).toFixed(3) : "",
+          heading_deg: Number.isFinite(asFiniteNumber(fix.heading_deg, fix.heading, fix.cog_deg)) ? asFiniteNumber(fix.heading_deg, fix.heading, fix.cog_deg).toFixed(3) : "",
+          sats: getSats(fix),
+        };
+      };
+
+      const getPixhawkGpsPortFix = (data) => {
+        return data?.outputs?.optical_flow_gps_port || data?.outputs?.gps_port || null;
+      };
+
+      const startGpsCsvLogger = () => {
+        gpsCsvLoggerState.recording = true;
+        gpsCsvLoggerState.startedAt = Date.now();
+        gpsCsvLoggerState.sensorRows = [];
+        gpsCsvLoggerState.pixhawkRows = [];
+        setGpsLogButton();
+        setGpsLogStatus("GPS logger: recording...");
+        appendLog("gps csv logger started");
+      };
+
+      const stopGpsCsvLogger = () => {
+        gpsCsvLoggerState.recording = false;
+        setGpsLogButton();
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const sensorCsv = toCsv(gpsCsvLoggerState.sensorRows);
+        const pixhawkCsv = toCsv(gpsCsvLoggerState.pixhawkRows);
+        downloadBlob(
+          new Blob([sensorCsv], { type: "text/csv;charset=utf-8" }),
+          `gps_sensor_${stamp}.csv`
+        );
+        downloadBlob(
+          new Blob([pixhawkCsv], { type: "text/csv;charset=utf-8" }),
+          `pixhawk_gps_port_${stamp}.csv`
+        );
+        setGpsLogStatus(
+          `GPS logger: saved sensor=${gpsCsvLoggerState.sensorRows.length}, pixhawk=${gpsCsvLoggerState.pixhawkRows.length}`
+        );
+        appendLog(
+          `gps csv logger stopped | sensor=${gpsCsvLoggerState.sensorRows.length} pixhawk=${gpsCsvLoggerState.pixhawkRows.length}`
+        );
       };
 
       const queueClientWrite = (op) => {
@@ -3264,6 +3419,17 @@
         clientRecDownloadBtn.addEventListener("click", downloadClientRecorder);
       }
       updateClientRecButtons();
+      if (gpsLogToggleBtn) {
+        gpsLogToggleBtn.addEventListener("click", () => {
+          if (gpsCsvLoggerState.recording) {
+            stopGpsCsvLogger();
+          } else {
+            startGpsCsvLogger();
+          }
+        });
+      }
+      setGpsLogButton();
+      setGpsLogStatus("GPS logger: idle");
 
       const updateGpsOriginUi = () => {
         const isAuto = gpsOriginMode.value === "auto";

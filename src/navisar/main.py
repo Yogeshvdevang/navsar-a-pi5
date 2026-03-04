@@ -727,6 +727,15 @@ def _make_dashboard_handler(
                 gps_fused = snap.get("gps_ll_from_fused", {}) if isinstance(snap, dict) else {}
                 gps_root = snap.get("gps", {}) if isinstance(snap, dict) else {}
                 gps_origin = gps_root.get("origin", {}) if isinstance(gps_root, dict) else {}
+                outputs = snap.get("outputs", {}) if isinstance(snap, dict) else {}
+                if not isinstance(outputs, dict):
+                    outputs = {}
+                gps_port_out = outputs.get("gps_port") if isinstance(outputs.get("gps_port"), dict) else {}
+                of_gps_port_out = (
+                    outputs.get("optical_flow_gps_port")
+                    if isinstance(outputs.get("optical_flow_gps_port"), dict)
+                    else {}
+                )
                 payload = {
                     "enabled": True,
                     "gps_graph_enabled": bool(calibration_gps_graph_enabled),
@@ -753,6 +762,21 @@ def _make_dashboard_handler(
                         "lat": _safe_float(gps_origin.get("lat")),
                         "lon": _safe_float(gps_origin.get("lon")),
                         "alt_m": _safe_float(gps_origin.get("alt_m")),
+                    },
+                    "mode": snap.get("mode") if isinstance(snap, dict) else None,
+                    "outputs": {
+                        "gps_port": {
+                            "lat": _safe_float(gps_port_out.get("lat")),
+                            "lon": _safe_float(gps_port_out.get("lon")),
+                            "alt_m": _safe_float(gps_port_out.get("alt_m")),
+                            "heading_deg": _safe_float(gps_port_out.get("heading_deg")),
+                        },
+                        "optical_flow_gps_port": {
+                            "lat": _safe_float(of_gps_port_out.get("lat")),
+                            "lon": _safe_float(of_gps_port_out.get("lon")),
+                            "alt_m": _safe_float(of_gps_port_out.get("alt_m")),
+                            "heading_deg": _safe_float(of_gps_port_out.get("heading_deg")),
+                        },
                     },
                     "optical_flow": {
                         "speed_x_mps": _safe_float(optical.get("speed_x")),
