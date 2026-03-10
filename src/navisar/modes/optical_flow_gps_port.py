@@ -93,6 +93,17 @@ class OpticalFlowGpsPortMode:
             print(message)
             self._last_warn = now
 
+    def _decay_filtered_velocity(self):
+        """Decay filtered velocity instead of hard-resetting it on bad samples."""
+        alpha = _clamp(self.smoothing_alpha, 0.0, 1.0)
+        decay = max(0.0, 1.0 - alpha)
+        self._vx_f *= decay
+        self._vy_f *= decay
+        if abs(self._vx_f) < self.deadband_mps:
+            self._vx_f = 0.0
+        if abs(self._vy_f) < self.deadband_mps:
+            self._vy_f = 0.0
+
     @staticmethod
     def _body_to_enu(vx_body_mps, vy_body_mps, heading_deg):
         """Rotate body-frame XY speed into ENU (east, north) using heading."""
@@ -199,8 +210,7 @@ class OpticalFlowGpsPortMode:
                 self._x_m += self._vx_f * dt_s
                 self._y_m += self._vy_f * dt_s
         else:
-            self._vx_f = 0.0
-            self._vy_f = 0.0
+            self._decay_filtered_velocity()
             self._stationary_count = 0
 
         self._last_time_s = now

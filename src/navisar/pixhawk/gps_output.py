@@ -194,6 +194,9 @@ class UbxSerialEmitter:
         self._ser = serial.Serial(port, baud, timeout=0)
         self._last_send = 0.0
         self._last_course = 0.0
+        self._last_time_of_week_ms = None
+        self._last_payload = None
+        self._rx_buffer = bytearray()
         self._fake_sats = FakeSatellites(
             min_sats=min_sats,
             max_sats=max_sats,
@@ -202,6 +205,7 @@ class UbxSerialEmitter:
 
     def ready(self, now):
         """Check if the next UBX update is due."""
+        self._drain_incoming()
         return now - self._last_send >= (1.0 / self.rate_hz)
 
     @staticmethod
@@ -233,6 +237,56 @@ class UbxSerialEmitter:
         ck_a, ck_b = cls._ubx_checksum(msg_class, msg_id, payload)
         checksum = struct.pack("BB", ck_a, ck_b)
         return header + length_bytes + payload + checksum
+
+    @classmethod
+    def _create_ack_ack(cls, cls_id, msg_id):
+        """Create a UBX-ACK-ACK response for a received CFG message."""
+        return cls._create_ubx_message(0x05, 0x01, struct.pack("BB", cls_id, msg_id))
+
+    def _drain_incoming(self):
+        """Read inbound UBX frames and ACK any UBX-CFG-* requests."""
+        try:
+            waiting = int(getattr(self._ser, "in_waiting", 0))
+        except Exception:
+            waiting = 0
+        if waiting <= 0:
+            return
+        try:
+            incoming = self._ser.read(waiting)
+        except Exception:
+            return
+        if incoming:
+            self._rx_buffer.extend(incoming)
+
+        while len(self._rx_buffer) >= 8:
+            start = self._rx_buffer.find(b"\xB5\x62")
+            if start < 0:
+                self._rx_buffer.clear()
+                return
+            if start > 0:
+                del self._rx_buffer[:start]
+            if len(self._rx_buffer) < 8:
+                return
+
+            msg_class = self._rx_buffer[2]
+            msg_id = self._rx_buffer[3]
+            payload_len = self._rx_buffer[4] | (self._rx_buffer[5] << 8)
+            frame_len = 6 + payload_len + 2
+            if len(self._rx_buffer) < frame_len:
+                return
+
+            payload = bytes(self._rx_buffer[6 : 6 + payload_len])
+            ck_a = self._rx_buffer[6 + payload_len]
+            ck_b = self._rx_buffer[7 + payload_len]
+            exp_a, exp_b = self._ubx_checksum(msg_class, msg_id, payload)
+            del self._rx_buffer[:frame_len]
+            if (ck_a, ck_b) != (exp_a, exp_b):
+                continue
+            if msg_class == 0x06:
+                ack = self._create_ack_ack(msg_class, msg_id)
+                self._ser.write(ack)
+                if self.raw_print:
+                    print(f"UBX RAW ACK-ACK: {_bytes_hex(ack)}")
 
     @classmethod
     def _create_nav_posllh(
@@ -446,6 +500,7 @@ class UbxSerialEmitter:
         include_heading=True,
     ):
         """Send UBX messages for current state."""
+        self._drain_incoming()
         speed_mps, course_deg = speed_course_from_enu(vx_e, vy_n)
         if include_heading:
             if course_deg_override is not None:
@@ -482,6 +537,12 @@ class UbxSerialEmitter:
         total_s = (now - gps_epoch).total_seconds() + gps_offset_s
         gps_week = int(total_s // (7 * 24 * 3600))
         time_of_week_ms = int((total_s - gps_week * 7 * 24 * 3600) * 1000)
+        if (
+            self._last_time_of_week_ms is not None
+            and time_of_week_ms == self._last_time_of_week_ms
+            and self._last_payload is not None
+        ):
+            return self._last_payload
         vel_n_mm = int(vy_n * 1000)
         vel_e_mm = int(vx_e * 1000)
         vel_d_mm = 0
@@ -536,7 +597,8 @@ class UbxSerialEmitter:
             print(f"UBX RAW NAV-STATUS: {_bytes_hex(status)}")
             print(f"UBX RAW NAV-DOP: {_bytes_hex(dop)}")
         self._last_send = time.time()
-        return {
+        self._last_time_of_week_ms = time_of_week_ms
+        self._last_payload = {
             "pvt": pvt,
             "posllh": posllh,
             "velned": velned,
@@ -560,3 +622,4 @@ class UbxSerialEmitter:
             "v_acc_m": float(self.v_acc_mm) / 1000.0,
             "speed_acc_mps": 1.0,
         }
+        return self._last_payload

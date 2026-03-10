@@ -104,7 +104,7 @@ gps_output:
   format: ubx
   port: /dev/ttyAMA0
   baud: 230400
-  rate_hz: 5
+  rate_hz: 10
   heading_mode: send
   ubx_h_acc_mm: 500
   ubx_v_acc_mm: 100
