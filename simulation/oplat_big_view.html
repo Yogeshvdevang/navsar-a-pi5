@@ -535,10 +535,9 @@
             return optRaw;
           })();
 
-          let heading = wrapHeading(asFinite(
-            headingFromMag(data?.compass?.incoming?.x_mg, data?.compass?.incoming?.y_mg),
-            data?.compass?.incoming?.heading_deg
-          ));
+          let heading = wrapHeading(
+            headingFromMag(data?.compass?.incoming?.x_mg, data?.compass?.incoming?.y_mg)
+          );
           if (Number.isFinite(heading)) {
             heading = wrapHeading(heading + state.tuning.headingBiasDeg);
             if (!Number.isFinite(state.headingSmoothedDeg)) {

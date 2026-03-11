@@ -843,30 +843,6 @@
           Optical GPS manual calib values: lat_scale=1.000 lon_scale=1.000 alt_offset_m=0.000
         </div>
       </div>
-      <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">VO Scale Factor</div>
-      <div class="gps-origin-note" id="vo-scale-status">VO scale: idle</div>
-      <div class="of-scale-panel">
-        <div class="vo-scale-form">
-          <select id="vo-scale-env-select" class="of-scale-select"></select>
-          <select id="vo-scale-light-select" class="of-scale-select"></select>
-          <select id="vo-scale-alt-select" class="of-scale-select">
-            <option value="0-8">Altitude: 0-8 m</option>
-            <option value="8-50">Altitude: 8-50 m</option>
-            <option value="50-100">Altitude: 50-100 m</option>
-            <option value="100-150">Altitude: 100-150 m</option>
-            <option value="150-200">Altitude: 150-200 m</option>
-            <option value="200-250">Altitude: 200-250 m</option>
-            <option value="250-300">Altitude: 250-300 m</option>
-          </select>
-          <input id="vo-scale-input" class="of-scale-input" type="number" step="0.001" min="0.1" max="5.0" value="1.000" />
-          <button id="vo-scale-write-btn" class="of-scale-write-btn" type="button">Write</button>
-        </div>
-      </div>
-      <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">VO Auto Calibration</div>
-      <div class="mode-buttons">
-        <button id="vo-auto-calib-btn">Start VO Auto Calib</button>
-      </div>
-      <div class="gps-origin-note" id="vo-auto-calib-status">VO auto calib: idle</div>
       <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">GPS Mode</div>
       <div class="gps-origin-controls">
         <div class="mode-buttons" id="gps-origin-buttons">
@@ -979,6 +955,9 @@
             <div class="mode-buttons" id="vo-heading-buttons" style="margin-bottom:8px;">
               <button type="button" data-heading-source="vo">VO Compass</button>
               <button type="button" data-heading-source="real">Real Compass</button>
+            </div>
+            <div class="mode-buttons" style="margin-bottom:8px;">
+              <button id="open-vo-big-view-btn" type="button">Open Big View (VO)</button>
             </div>
             <div class="plot-wrap">
               <canvas id="vo-pos-plot"></canvas>
@@ -1173,6 +1152,32 @@
         lastX: null,
         lastY: null,
         lastT: null,
+      };
+      const compassNoiseFilterState = {
+        realSmoothed: null,
+      };
+      const COMPASS_DENOISE_ALPHA = 0.18;
+      const COMPASS_MAX_STEP_DEG = 10.0;
+      const denoiseCompassHeading = (rawHeading) => {
+        const raw = wrapHeading(rawHeading);
+        if (!Number.isFinite(raw)) {
+          return Number.isFinite(compassNoiseFilterState.realSmoothed)
+            ? compassNoiseFilterState.realSmoothed
+            : null;
+        }
+        if (!Number.isFinite(compassNoiseFilterState.realSmoothed)) {
+          compassNoiseFilterState.realSmoothed = raw;
+          return raw;
+        }
+        const d = headingDelta(raw, compassNoiseFilterState.realSmoothed);
+        if (!Number.isFinite(d)) {
+          return compassNoiseFilterState.realSmoothed;
+        }
+        const limited = clamp(d, -COMPASS_MAX_STEP_DEG, COMPASS_MAX_STEP_DEG);
+        compassNoiseFilterState.realSmoothed = wrapHeading(
+          compassNoiseFilterState.realSmoothed + limited * COMPASS_DENOISE_ALPHA
+        );
+        return compassNoiseFilterState.realSmoothed;
       };
       const compassFusionState = {
         realLast: null,
@@ -3432,15 +3437,13 @@
           setText("of-vy", opt?.flow_vy, 0);
           setText("of-q", opt?.flow_q, 0);
 
-          const realCompassHeading = wrapHeading(
-            asFiniteNumber(
-              headingFromMag(
-                data.compass?.incoming?.x_mg,
-                data.compass?.incoming?.y_mg
-              ),
-              data.compass?.incoming?.heading_deg
+          const realCompassHeadingRaw = wrapHeading(
+            headingFromMag(
+              data.compass?.incoming?.x_mg,
+              data.compass?.incoming?.y_mg
             )
           );
+          const realCompassHeading = denoiseCompassHeading(realCompassHeadingRaw);
 
           const isOptical = data?.source === "optical_flow" || String(data?.mode || "").startsWith("optical_flow");
           let rawVx = isOptical
@@ -3625,9 +3628,7 @@
           setText("nav-alt", alt, 5);
           setText("nav-spd", speed, 2);
           const heading = asFiniteNumber(
-            data.heading?.deg,
-            data.outputs?.gps_port?.heading_deg,
-            data.compass?.incoming?.heading_deg,
+            realCompassHeading,
             data.sensors?.attitude?.yaw ? data.sensors.attitude.yaw * 57.3 : null
           );
           if (Number.isFinite(realCompassHeading)) {
@@ -3635,8 +3636,7 @@
           }
           // Use the same heading source as the "real" compass widget.
           const compassHeadingForArrow = wrapHeading(asFiniteNumber(
-            realCompassHeading,
-            data.compass?.incoming?.heading_deg
+            realCompassHeading
           ));
           if (Number.isFinite(compassHeadingForArrow)) {
             plotState.currentHeadingDeg = compassHeadingForArrow;
@@ -3710,8 +3710,7 @@
             0
           ) || 0;
           const flowHeadingDeg = asFiniteNumber(
-            realCompassHeading,
-            data.compass?.incoming?.heading_deg
+            realCompassHeading
           );
           const opLatIntegrated = integrateOpticalLikeOpLat(
             opticalBodyVx,
@@ -3832,6 +3831,7 @@
       const autoCalibBtn = document.getElementById("auto-calib-btn");
       const autoCalibStatusEl = document.getElementById("auto-calib-status");
       const openOfBigViewBtn = document.getElementById("open-of-big-view-btn");
+      const openVoBigViewBtn = document.getElementById("open-vo-big-view-btn");
       const voHeadingButtons = Array.from(document.querySelectorAll("#vo-heading-buttons button"));
       const gpsAutoBtn = document.getElementById("gps-auto-btn");
       const gpsVariableBtn = document.getElementById("gps-variable-btn");
@@ -3867,6 +3867,13 @@
 
       const openOpticalBigView = () => {
         const url = "/oplat_big_view.html";
+        const w = window.open(url, "_blank", "noopener,noreferrer");
+        if (!w) {
+          window.location.href = url;
+        }
+      };
+      const openVoBigView = () => {
+        const url = "/vo_big_view.html";
         const w = window.open(url, "_blank", "noopener,noreferrer");
         if (!w) {
           window.location.href = url;
@@ -4926,6 +4933,9 @@
       }
       if (openOfBigViewBtn) {
         openOfBigViewBtn.addEventListener("click", openOpticalBigView);
+      }
+      if (openVoBigViewBtn) {
+        openVoBigViewBtn.addEventListener("click", openVoBigView);
       }
       if (ofEnvSelect) ofEnvSelect.addEventListener("change", updateOpticalScaleInputFromSelection);
       if (ofLightSelect) ofLightSelect.addEventListener("change", updateOpticalScaleInputFromSelection);
