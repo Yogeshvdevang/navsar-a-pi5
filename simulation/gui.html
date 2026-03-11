@@ -336,7 +336,7 @@
 
       .compass-panel {
         display: grid;
-        grid-template-columns: repeat(3, minmax(120px, 1fr));
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
         justify-items: center;
         align-items: start;
         gap: 12px;
@@ -902,21 +902,6 @@
                   <div class="needle"></div>
                 </div>
               </div>
-              <div class="compass-unit">
-                <div class="name">Optical Flow</div>
-                <div class="compass">
-                  <div class="rose" id="compass-opt-rose">
-                    <div class="ring"></div>
-                    <div class="label n">N</div>
-                    <div class="label s">S</div>
-                    <div class="label e">E</div>
-                    <div class="label w">W</div>
-                  </div>
-                  <div class="deg" id="compass-opt-deg">--.-°</div>
-                  <div class="title">HEADING</div>
-                  <div class="needle"></div>
-                </div>
-              </div>
             </div>
           </div>
           <div class="card" style="background:#000; border-color:#1a1a1a;">
@@ -965,6 +950,9 @@
           </div>
           <div class="card">
             <h3>Integrated Position Optical Flow (m)</h3>
+            <div class="mode-buttons" style="margin-bottom:8px;">
+              <button id="open-of-big-view-btn" type="button">Open Big View (op_lat)</button>
+            </div>
             <div class="plot-wrap">
               <canvas id="pos-plot"></canvas>
             </div>
@@ -1172,7 +1160,6 @@
       const compassFusionState = {
         realLast: null,
         vo: { originReal: null, originSrc: null, shown: null },
-        optical: { originReal: null, originSrc: null, shown: null },
       };
 
       const dataUrl = (() => {
@@ -1211,7 +1198,7 @@
       // Drone canvas removed in favor of live VO stream.
 
       const plotState = {
-        maxPoints: 1200,
+        maxPoints: 400,
         times: [],
         vx: [],
         vy: [],
@@ -1239,7 +1226,7 @@
         voHeadingDeg: null,
       };
       const calibrationGpsState = {
-        maxPoints: 1200,
+        maxPoints: 400,
         raw: {
           lats: [],
           lons: [],
@@ -1264,6 +1251,16 @@
         y: 0,
         ready: false,
       };
+      const opLatState = {
+        x: 0,
+        y: 0,
+        emaVx: 0,
+        emaVy: 0,
+        lastTimeMs: null,
+      };
+      const OP_LAT_GAIN = 1.0;
+      const OP_LAT_EMA_ALPHA = 0.2;
+      const OP_LAT_DEADBAND = 0.0;
 
       const filterSignal = (prev, raw, alpha = 0.2, deadband = 0.0, maxStep = 1e9) => {
         let value = Number.isFinite(raw) ? raw : prev;
@@ -1275,6 +1272,48 @@
           value = prev + Math.sign(delta) * maxStep;
         }
         return prev + alpha * (value - prev);
+      };
+      const applyDeadband = (v, threshold) => (Math.abs(v) < threshold ? 0 : v);
+
+      const integrateOpticalLikeOpLat = (vxBodyRaw, vyBodyRaw, headingDeg, nowMs) => {
+        let vxBody = Number(vxBodyRaw);
+        let vyBody = Number(vyBodyRaw);
+        if (!Number.isFinite(vxBody)) vxBody = 0;
+        if (!Number.isFinite(vyBody)) vyBody = 0;
+        vxBody = applyDeadband(vxBody, OP_LAT_DEADBAND);
+        vyBody = applyDeadband(vyBody, OP_LAT_DEADBAND);
+
+        // Match tools/snippet/op_lat.py:
+        // psi = pi/2 - heading, world = R(psi) * body
+        let vxWorld = vxBody;
+        let vyWorld = vyBody;
+        if (Number.isFinite(headingDeg)) {
+          const headingRad = (Number(headingDeg) * Math.PI) / 180.0;
+          const psi = Math.PI / 2.0 - headingRad;
+          const c = Math.cos(psi);
+          const s = Math.sin(psi);
+          vxWorld = c * vxBody - s * vyBody;
+          vyWorld = s * vxBody + c * vyBody;
+        }
+
+        let dt = 0.05; // op_lat.py default @ 20Hz
+        if (Number.isFinite(opLatState.lastTimeMs)) {
+          dt = (nowMs - opLatState.lastTimeMs) / 1000.0;
+          if (!(dt > 0 && dt <= 0.3)) dt = 0.05;
+        }
+        opLatState.lastTimeMs = nowMs;
+
+        opLatState.emaVx = OP_LAT_EMA_ALPHA * vxWorld + (1.0 - OP_LAT_EMA_ALPHA) * opLatState.emaVx;
+        opLatState.emaVy = OP_LAT_EMA_ALPHA * vyWorld + (1.0 - OP_LAT_EMA_ALPHA) * opLatState.emaVy;
+        opLatState.x += opLatState.emaVx * dt * OP_LAT_GAIN;
+        opLatState.y += opLatState.emaVy * dt * OP_LAT_GAIN;
+
+        return {
+          x: opLatState.x,
+          y: opLatState.y,
+          vxWorld: opLatState.emaVx,
+          vyWorld: opLatState.emaVy,
+        };
       };
 
       const smoothSeries = (values, windowSize = 11) => {
@@ -3506,11 +3545,6 @@
             headingFromVelocity(data.camera?.vx, data.camera?.vy, 0.005),
             voHeadingFromDelta
           ));
-          const opticalMotionHeading = wrapHeading(asFiniteNumber(
-            headingFromVelocity(rawVx, rawVy, 0.02),
-            headingFromVelocity(opt?.speed_x, opt?.speed_y, 0.02),
-            headingFromVelocity(opt?.flow_vx, opt?.flow_vy, 0.02)
-          ));
 
           // VO compass: lock origin from real compass, then move only with VO heading.
           if (
@@ -3533,34 +3567,7 @@
             }
           }
 
-          // Optical compass: lock origin from real compass, then move only with optical heading.
-          if (
-            compassFusionState.optical.originReal === null
-            && Number.isFinite(compassFusionState.realLast)
-            && Number.isFinite(opticalMotionHeading)
-          ) {
-            compassFusionState.optical.originReal = compassFusionState.realLast;
-            compassFusionState.optical.originSrc = opticalMotionHeading;
-            compassFusionState.optical.shown = compassFusionState.realLast;
-          }
-          if (
-            Number.isFinite(opticalMotionHeading)
-            && Number.isFinite(compassFusionState.optical.originReal)
-            && Number.isFinite(compassFusionState.optical.originSrc)
-          ) {
-            const d = headingDelta(
-              opticalMotionHeading,
-              compassFusionState.optical.originSrc
-            );
-            if (Number.isFinite(d)) {
-              compassFusionState.optical.shown = wrapHeading(
-                compassFusionState.optical.originReal + d
-              );
-            }
-          }
-
           const voCompassHeading = compassFusionState.vo.shown;
-          const opticalCompassHeading = compassFusionState.optical.shown;
           plotState.voHeadingDeg = asFiniteNumber(voCompassHeading, voMotionHeading, plotState.voHeadingDeg);
           setText("nav-hdg", heading, 1);
 
@@ -3569,19 +3576,30 @@
           setText("baro-alt-m", barometerAltM, 3);
           setText("rt-vx", vx, 3);
           setText("rt-vy", vy, 3);
-          let posX = 0;
-          let posY = 0;
-          if (isOptical) {
-            const lastX = plotState.x.slice(-1)[0] ?? filterState.x;
-            const lastY = plotState.y.slice(-1)[0] ?? filterState.y;
-            posX = lastX + vx * 0.05;
-            posY = lastY + vy * 0.05;
-          } else {
-            const camX = asFiniteNumber(data.camera?.x, filterState.x) || 0;
-            const camY = asFiniteNumber(data.camera?.y, filterState.y) || 0;
-            posX = filterSignal(filterState.x, camX, 0.2, 0.0, 0.15);
-            posY = filterSignal(filterState.y, camY, 0.2, 0.0, 0.15);
-          }
+          const opticalBodyVx = asFiniteNumber(
+            opt?.speed_x,
+            opt?.flow_vx,
+            opt?.flow_vx_mps,
+            0
+          ) || 0;
+          const opticalBodyVy = asFiniteNumber(
+            opt?.speed_y,
+            opt?.flow_vy,
+            opt?.flow_vy_mps,
+            0
+          ) || 0;
+          const flowHeadingDeg = asFiniteNumber(
+            realCompassHeading,
+            data.compass?.incoming?.heading_deg
+          );
+          const opLatIntegrated = integrateOpticalLikeOpLat(
+            opticalBodyVx,
+            opticalBodyVy,
+            flowHeadingDeg,
+            nowMs
+          );
+          let posX = opLatIntegrated.x;
+          let posY = opLatIntegrated.y;
           filterState.x = posX;
           filterState.y = posY;
           setText("rt-x", posX, 3);
@@ -3648,7 +3666,6 @@
           drawBarometerHeightBar();
           updateCompassWidget("real", realCompassHeading);
           updateCompassWidget("vo", voCompassHeading);
-          updateCompassWidget("opt", opticalCompassHeading);
 
           // plots handled below
         } catch (err) {
@@ -3691,6 +3708,7 @@
       const voAutoCalibStatusEl = document.getElementById("vo-auto-calib-status");
       const autoCalibBtn = document.getElementById("auto-calib-btn");
       const autoCalibStatusEl = document.getElementById("auto-calib-status");
+      const openOfBigViewBtn = document.getElementById("open-of-big-view-btn");
       const voHeadingButtons = Array.from(document.querySelectorAll("#vo-heading-buttons button"));
       const gpsAutoBtn = document.getElementById("gps-auto-btn");
       const gpsVariableBtn = document.getElementById("gps-variable-btn");
@@ -3722,6 +3740,24 @@
           logState.lines.splice(0, logState.lines.length - logState.max);
         }
         logEl.textContent = logState.lines.join("\n");
+      };
+
+      const openOpticalBigView = async () => {
+        const targetCard = openOfBigViewBtn ? openOfBigViewBtn.closest(".card") : null;
+        if (!targetCard) return;
+        try {
+          if (document.fullscreenElement) {
+            await document.exitFullscreen();
+            return;
+          }
+          if (targetCard.requestFullscreen) {
+            await targetCard.requestFullscreen();
+            return;
+          }
+          appendLog("big view unsupported: fullscreen API not available");
+        } catch (err) {
+          appendLog(`big view failed: ${err?.message || "fullscreen error"}`);
+        }
       };
 
       const setBlackboxStatus = (text) => {
@@ -3906,17 +3942,17 @@
       const captureAutoCalibSample = (sample) => {
         if (!autoCalibState.running) return;
         autoCalibState.samples.push(sample);
-        if (autoCalibState.samples.length > 12000) autoCalibState.samples.shift();
+        if (autoCalibState.samples.length > 3000) autoCalibState.samples.shift();
       };
       const captureOpticalAutoCalibSample = (sample) => {
         if (!opticalAutoCalibState.running) return;
         opticalAutoCalibState.samples.push(sample);
-        if (opticalAutoCalibState.samples.length > 12000) opticalAutoCalibState.samples.shift();
+        if (opticalAutoCalibState.samples.length > 3000) opticalAutoCalibState.samples.shift();
       };
       const captureVoAutoCalibSample = (sample) => {
         if (!voAutoCalibState.running) return;
         voAutoCalibState.samples.push(sample);
-        if (voAutoCalibState.samples.length > 12000) voAutoCalibState.samples.shift();
+        if (voAutoCalibState.samples.length > 3000) voAutoCalibState.samples.shift();
       };
       const computeTrajectoryAutoCalibResult = (samples) => {
         const valid = samples.filter((s) =>
@@ -4774,6 +4810,9 @@
       }
       if (sensorCsvDownloadBtn) {
         sensorCsvDownloadBtn.addEventListener("click", downloadSensorCsv);
+      }
+      if (openOfBigViewBtn) {
+        openOfBigViewBtn.addEventListener("click", openOpticalBigView);
       }
       if (ofEnvSelect) ofEnvSelect.addEventListener("change", updateOpticalScaleInputFromSelection);
       if (ofLightSelect) ofLightSelect.addEventListener("change", updateOpticalScaleInputFromSelection);

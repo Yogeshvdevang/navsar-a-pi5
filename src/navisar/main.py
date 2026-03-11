@@ -2527,7 +2527,7 @@ def _camera_signature(camera_cfg):
     format_name = None
     if model in {"opencv", "usb", "generic"}:
         index = camera_cfg.get("index", 0)
-    if model in {"ov9281", "ov9821"}:
+    if model in {"ov9281", "ov9821", "ov5647"}:
         format_name = camera_cfg.get("format", "YUV420")
     return model, index, format_name
 
