@@ -958,6 +958,11 @@
           </div>
           <div class="card">
             <h3>Integrated Position Optical Flow (m)</h3>
+            <div class="mode-buttons" id="of-heading-buttons" style="margin-bottom:8px;">
+              <button type="button" data-heading-source="vo">VO Compass</button>
+              <button type="button" data-heading-source="real">Real Compass</button>
+              <button type="button" data-heading-source="pixhawk">Pixhawk Compass</button>
+            </div>
             <div class="mode-buttons" style="margin-bottom:8px;">
               <button id="open-of-big-view-btn" type="button">Open Big View (op_lat)</button>
             </div>
@@ -970,6 +975,7 @@
             <div class="mode-buttons" id="vo-heading-buttons" style="margin-bottom:8px;">
               <button type="button" data-heading-source="vo">VO Compass</button>
               <button type="button" data-heading-source="real">Real Compass</button>
+              <button type="button" data-heading-source="pixhawk">Pixhawk Compass</button>
             </div>
             <div class="mode-buttons" style="margin-bottom:8px;">
               <button id="open-vo-big-view-btn" type="button">Open Big View (VO)</button>
@@ -1299,6 +1305,7 @@
         gpsPortHeadingDeg: null,
         opticalHeightTarget: null,
         currentHeadingDeg: null,
+        pixhawkHeadingDeg: null,
         voHeadingDeg: null,
         currentVxWorldMps: 0,
         currentVyWorldMps: 0,
@@ -2732,7 +2739,13 @@
         const ly = plotState.y[plotState.y.length - 1] ?? 0;
         const lpx = toPx(lx);
         const lpy = toPy(ly);
-        const hasHeading = Number.isFinite(Number(plotState.currentHeadingDeg));
+        const selectedHeadingDeg =
+          ofHeadingSourceState.value === "vo"
+            ? plotState.voHeadingDeg
+            : (ofHeadingSourceState.value === "pixhawk"
+              ? plotState.pixhawkHeadingDeg
+              : plotState.currentHeadingDeg);
+        const hasHeading = Number.isFinite(Number(selectedHeadingDeg));
         const vx = Number(plotState.currentVxWorldMps);
         const vy = Number(plotState.currentVyWorldMps);
         const hasVel = Number.isFinite(vx) && Number.isFinite(vy);
@@ -2781,12 +2794,12 @@
         }
 
         if (hasHeading) {
-          const headingRad = Number(plotState.currentHeadingDeg) * Math.PI / 180.0;
+          const headingRad = Number(selectedHeadingDeg) * Math.PI / 180.0;
           drawOpLatArrow(posCtx, lpx, lpy, headingRad, 26, 8, 10, 4, "#dc2626", "#ef4444", 2.5);
         }
 
         const markerHeadingDeg = hasHeading
-          ? Number(plotState.currentHeadingDeg)
+          ? Number(selectedHeadingDeg)
           : (hasVel ? ((Math.atan2(vx, vy) * 180.0 / Math.PI + 360.0) % 360.0) : null);
         if (Number.isFinite(markerHeadingDeg)) {
           const a = Number(markerHeadingDeg) * Math.PI / 180.0;
@@ -2798,12 +2811,15 @@
           posCtx.fill();
         }
 
-        const hdgText = hasHeading ? Number(plotState.currentHeadingDeg).toFixed(1) : "--";
+        const hdgText = hasHeading ? Number(selectedHeadingDeg).toFixed(1) : "--";
         const vxText = hasVel ? vx.toFixed(3) : "--";
         const vyText = hasVel ? vy.toFixed(3) : "--";
+        const headingLabel = ofHeadingSourceState.value === "real"
+          ? "real"
+          : (ofHeadingSourceState.value === "pixhawk" ? "pixhawk" : "vo");
         posCtx.fillStyle = "#0f172a";
         posCtx.font = "12px monospace";
-        posCtx.fillText(`vx=${vxText} m/s  vy=${vyText} m/s  zrot=${hdgText} deg`, lpx + 10, lpy - 12);
+        posCtx.fillText(`vx=${vxText} m/s  vy=${vyText} m/s  ${headingLabel} zrot=${hdgText} deg`, lpx + 10, lpy - 12);
       };
 
       const drawVoPosPlot = () => {
@@ -2867,7 +2883,9 @@
         voPosCtx.fill();
 
         const selectedHeading =
-          voHeadingSourceState.value === "real" ? plotState.currentHeadingDeg : plotState.voHeadingDeg;
+          voHeadingSourceState.value === "real"
+            ? plotState.currentHeadingDeg
+            : (voHeadingSourceState.value === "pixhawk" ? plotState.pixhawkHeadingDeg : plotState.voHeadingDeg);
         drawHeadingArrow(voPosCtx, last.x, last.y, selectedHeading, 12, "#dc2626");
 
         voPosCtx.fillStyle = "#111";
@@ -2890,7 +2908,9 @@
         voPosCtx.fillRect(rect.width - 160, 38, 10, 10);
         const curr = finitePoints[finitePoints.length - 1];
         drawStatLabel(voPosCtx, 8, 10, `vo x ${curr.xv.toFixed(3)} m y ${curr.yv.toFixed(3)} m`, "#333");
-        const headingLabel = voHeadingSourceState.value === "real" ? "real" : "vo";
+        const headingLabel = voHeadingSourceState.value === "real"
+          ? "real"
+          : (voHeadingSourceState.value === "pixhawk" ? "pixhawk" : "vo");
         if (Number.isFinite(selectedHeading)) {
           drawStatLabel(voPosCtx, 8, 28, `${headingLabel} hdg ${selectedHeading.toFixed(1)}°`, "#dc2626");
         }
@@ -3512,8 +3532,16 @@
           let rawVy = isOptical
             ? asFiniteNumber(opt?.speed_y, opt?.flow_vy, 0) || 0
             : asFiniteNumber(data.camera?.vy, 0) || 0;
-          if (isOptical && Number.isFinite(realCompassHeading)) {
-            const rotated = rotateOpticalVelocityByHeading(rawVx, rawVy, realCompassHeading);
+          const opticalHeadingForFrame = asFiniteNumber(
+            ofHeadingSourceState.value === "vo"
+              ? plotState.voHeadingDeg
+              : (ofHeadingSourceState.value === "pixhawk" ? pixhawkCompassHeading : realCompassHeading),
+            realCompassHeading,
+            pixhawkCompassHeading,
+            plotState.voHeadingDeg
+          );
+          if (isOptical && Number.isFinite(opticalHeadingForFrame)) {
+            const rotated = rotateOpticalVelocityByHeading(rawVx, rawVy, opticalHeadingForFrame);
             rawVx = Number.isFinite(rotated.vx) ? rotated.vx : rawVx;
             rawVy = Number.isFinite(rotated.vy) ? rotated.vy : rawVy;
           }
@@ -3701,6 +3729,9 @@
           if (Number.isFinite(compassHeadingForArrow)) {
             plotState.currentHeadingDeg = compassHeadingForArrow;
           }
+          if (Number.isFinite(pixhawkCompassHeading)) {
+            plotState.pixhawkHeadingDeg = pixhawkCompassHeading;
+          }
           const nowMs = Date.now();
           const camXNow = asFiniteNumber(data.camera?.x, null);
           const camYNow = asFiniteNumber(data.camera?.y, null);
@@ -3770,7 +3801,12 @@
             0
           ) || 0;
           const flowHeadingDeg = asFiniteNumber(
-            realCompassHeading
+            ofHeadingSourceState.value === "vo"
+              ? plotState.voHeadingDeg
+              : (ofHeadingSourceState.value === "pixhawk" ? plotState.pixhawkHeadingDeg : realCompassHeading),
+            realCompassHeading,
+            plotState.pixhawkHeadingDeg,
+            plotState.voHeadingDeg
           );
           const opLatIntegrated = integrateOpticalLikeOpLat(
             opticalBodyVx,
@@ -3893,6 +3929,7 @@
       const autoCalibStatusEl = document.getElementById("auto-calib-status");
       const openOfBigViewBtn = document.getElementById("open-of-big-view-btn");
       const openVoBigViewBtn = document.getElementById("open-vo-big-view-btn");
+      const ofHeadingButtons = Array.from(document.querySelectorAll("#of-heading-buttons button"));
       const voHeadingButtons = Array.from(document.querySelectorAll("#vo-heading-buttons button"));
       const gpsAutoBtn = document.getElementById("gps-auto-btn");
       const gpsVariableBtn = document.getElementById("gps-variable-btn");
@@ -3903,10 +3940,17 @@
       const gpsLonInput = document.getElementById("gps-lon-input");
       const gpsAltInput = document.getElementById("gps-alt-input");
       const gpsOriginMode = { value: "auto" };
+      const ofHeadingSourceState = { value: "real" };
       const voHeadingSourceState = { value: "vo" };
 
       const setGpsModeStatus = (text) => {
         if (gpsModeStatus) gpsModeStatus.textContent = `Mode status: ${text}`;
+      };
+
+      const updateOfHeadingButtons = () => {
+        ofHeadingButtons.forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.headingSource === ofHeadingSourceState.value);
+        });
       };
 
       const updateVoHeadingButtons = () => {
@@ -5399,16 +5443,27 @@
           }
         });
       });
+      ofHeadingButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const src = btn.dataset.headingSource;
+          if (src === "vo" || src === "real" || src === "pixhawk") {
+            ofHeadingSourceState.value = src;
+            updateOfHeadingButtons();
+            drawPosPlot();
+          }
+        });
+      });
       voHeadingButtons.forEach((btn) => {
         btn.addEventListener("click", () => {
           const src = btn.dataset.headingSource;
-          if (src === "vo" || src === "real") {
+          if (src === "vo" || src === "real" || src === "pixhawk") {
             voHeadingSourceState.value = src;
             updateVoHeadingButtons();
             drawVoPosPlot();
           }
         });
       });
+      updateOfHeadingButtons();
       updateVoHeadingButtons();
       if (gpsAutoBtn) {
         gpsAutoBtn.addEventListener("click", () => {
