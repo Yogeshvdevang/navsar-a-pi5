@@ -986,6 +986,11 @@
           </div>
           <div class="card span-2">
             <h3>GPS Sensor Lat/Lon Trajectory</h3>
+            <div class="mode-buttons" id="gps-traj-heading-buttons" style="margin-bottom:8px;">
+              <button type="button" data-heading-source="vo">VO Compass</button>
+              <button type="button" data-heading-source="real">Real Compass</button>
+              <button type="button" data-heading-source="pixhawk">Pixhawk Compass</button>
+            </div>
             <div class="gps-origin-note" id="gps-traj-live">
               GPS Sensor: lat=-- lon=-- alt=--m fix=-- hdg=--
             </div>
@@ -3596,10 +3601,21 @@
             const sAltTxt = Number.isFinite(gpsSensorAltitudeM)
               ? gpsSensorAltitudeM.toFixed(2)
               : "--";
-            const sHdgNum = asFiniteNumber(realCompassHeading, plotState.currentHeadingDeg);
+            const sHdgNum = asFiniteNumber(
+              gpsTrajHeadingSourceState.value === "vo"
+                ? plotState.voHeadingDeg
+                : (gpsTrajHeadingSourceState.value === "pixhawk"
+                  ? pixhawkCompassHeading
+                  : realCompassHeading),
+              realCompassHeading,
+              pixhawkCompassHeading,
+              plotState.voHeadingDeg,
+              plotState.currentHeadingDeg
+            );
             const sHdg = Number.isFinite(sHdgNum) ? sHdgNum.toFixed(1) : "--";
+            const sHdgSrc = gpsTrajHeadingSourceState.value;
             gpsTrajLiveEl.textContent =
-              `GPS Sensor: lat=${sLatTxt} lon=${sLonTxt} alt=${sAltTxt}m fix=${sFixTxt} hdg=${sHdg}°`;
+              `GPS Sensor: lat=${sLatTxt} lon=${sLonTxt} alt=${sAltTxt}m fix=${sFixTxt} hdg(${sHdgSrc})=${sHdg}°`;
           }
           plotState.gpsPortHeadingDeg = asFiniteNumber(
             selectedGpsOutput?.heading_deg,
@@ -3931,6 +3947,7 @@
       const openVoBigViewBtn = document.getElementById("open-vo-big-view-btn");
       const ofHeadingButtons = Array.from(document.querySelectorAll("#of-heading-buttons button"));
       const voHeadingButtons = Array.from(document.querySelectorAll("#vo-heading-buttons button"));
+      const gpsTrajHeadingButtons = Array.from(document.querySelectorAll("#gps-traj-heading-buttons button"));
       const gpsAutoBtn = document.getElementById("gps-auto-btn");
       const gpsVariableBtn = document.getElementById("gps-variable-btn");
       const gpsOriginFields = document.getElementById("gps-origin-fields");
@@ -3942,6 +3959,7 @@
       const gpsOriginMode = { value: "auto" };
       const ofHeadingSourceState = { value: "real" };
       const voHeadingSourceState = { value: "vo" };
+      const gpsTrajHeadingSourceState = { value: "real" };
 
       const setGpsModeStatus = (text) => {
         if (gpsModeStatus) gpsModeStatus.textContent = `Mode status: ${text}`;
@@ -3956,6 +3974,11 @@
       const updateVoHeadingButtons = () => {
         voHeadingButtons.forEach((btn) => {
           btn.classList.toggle("active", btn.dataset.headingSource === voHeadingSourceState.value);
+        });
+      };
+      const updateGpsTrajHeadingButtons = () => {
+        gpsTrajHeadingButtons.forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.headingSource === gpsTrajHeadingSourceState.value);
         });
       };
 
@@ -5463,8 +5486,18 @@
           }
         });
       });
+      gpsTrajHeadingButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const src = btn.dataset.headingSource;
+          if (src === "vo" || src === "real" || src === "pixhawk") {
+            gpsTrajHeadingSourceState.value = src;
+            updateGpsTrajHeadingButtons();
+          }
+        });
+      });
       updateOfHeadingButtons();
       updateVoHeadingButtons();
+      updateGpsTrajHeadingButtons();
       if (gpsAutoBtn) {
         gpsAutoBtn.addEventListener("click", () => {
           handleSelectAuto();
