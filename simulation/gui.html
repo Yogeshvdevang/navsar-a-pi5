@@ -506,6 +506,23 @@
       .plot-wrap.baro-portrait canvas {
         height: 280px;
       }
+      .card:fullscreen {
+        width: min(96vw, 1600px);
+        height: 96vh;
+        margin: auto;
+        display: flex;
+        flex-direction: column;
+      }
+      .card:fullscreen .plot-wrap {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      .card:fullscreen .plot-wrap canvas {
+        flex: 1;
+        height: 100% !important;
+        min-height: 72vh;
+      }
 
       .gps-calibration-plot {
         margin-top: 8px;
@@ -1224,6 +1241,8 @@
         opticalHeightTarget: null,
         currentHeadingDeg: null,
         voHeadingDeg: null,
+        currentVxWorldMps: 0,
+        currentVyWorldMps: 0,
       };
       const calibrationGpsState = {
         maxPoints: 400,
@@ -2499,6 +2518,34 @@
         ctx.stroke();
       };
 
+      const drawOpLatArrow = (ctx, x, y, angleRad, len, tailBack, shaftLen, wing, shaftColor, headColor, lineWidth) => {
+        const dx = Math.sin(angleRad);
+        const dy = -Math.cos(angleRad);
+        const tipX = x + dx * len;
+        const tipY = y + dy * len;
+        const tailX = x - dx * tailBack;
+        const tailY = y - dy * tailBack;
+        const headBaseX = tipX - dx * shaftLen;
+        const headBaseY = tipY - dy * shaftLen;
+        const nx = -dy;
+        const ny = dx;
+
+        ctx.strokeStyle = shaftColor;
+        ctx.lineWidth = lineWidth;
+        ctx.beginPath();
+        ctx.moveTo(tailX, tailY);
+        ctx.lineTo(headBaseX, headBaseY);
+        ctx.stroke();
+
+        ctx.fillStyle = headColor;
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(headBaseX + nx * wing, headBaseY + ny * wing);
+        ctx.lineTo(headBaseX - nx * wing, headBaseY - ny * wing);
+        ctx.closePath();
+        ctx.fill();
+      };
+
       const drawVelPlot = () => {
         const rect = resizeCanvas(velPlot, velCtx);
         if (!rect) return;
@@ -2533,97 +2580,171 @@
         const rect = resizeCanvas(posPlot, posCtx);
         if (!rect) return;
         if (plotState.x.length < 2) return;
-        const pad = 32;
-        const topPad = 72;
-        const minX = Math.min(...plotState.x);
-        const maxX = Math.max(...plotState.x);
-        const minY = Math.min(...plotState.y);
-        const maxY = Math.max(...plotState.y);
-        const spanX = Math.max(Math.abs(minX), Math.abs(maxX));
-        const spanY = Math.max(Math.abs(minY), Math.abs(maxY));
-        const span = Math.max(spanX, spanY, 0.01) * 1.1;
-        posCtx.strokeStyle = "rgba(0,0,0,0.12)";
+        const pad = 36;
+        const safeRange = (minVal, maxVal, minSpan = 1.0) => {
+          if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) return [-1, 1];
+          if (minVal === maxVal) {
+            const p = Math.max(minSpan, Math.abs(minVal) * 0.2, 1);
+            return [minVal - p, maxVal + p];
+          }
+          const span = maxVal - minVal;
+          const p = Math.max(span * 0.15, minSpan);
+          return [minVal - p, maxVal + p];
+        };
+
+        let minX = plotState.x[0] ?? 0;
+        let maxX = plotState.x[0] ?? 0;
+        let minY = plotState.y[0] ?? 0;
+        let maxY = plotState.y[0] ?? 0;
+        for (let i = 0; i < plotState.x.length; i += 1) {
+          const x = plotState.x[i];
+          const y = plotState.y[i];
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        if (0 < minX) minX = 0;
+        if (0 > maxX) maxX = 0;
+        if (0 < minY) minY = 0;
+        if (0 > maxY) maxY = 0;
+
+        const [x0, x1] = safeRange(minX, maxX, 1.0);
+        const [y0, y1] = safeRange(minY, maxY, 1.0);
+        const toPx = (x) => pad + ((x - x0) * (rect.width - 2 * pad) / (x1 - x0 || 1));
+        const toPy = (y) => rect.height - pad - ((y - y0) * (rect.height - 2 * pad) / (y1 - y0 || 1));
+
+        posCtx.strokeStyle = "#e2e8f0";
         posCtx.lineWidth = 1;
-        posCtx.strokeRect(pad, topPad, rect.width - pad * 2, rect.height - topPad - pad);
-        for (let i = 1; i <= 4; i += 1) {
-          const x = pad + ((rect.width - pad * 2) / 5) * i;
-          const y = topPad + ((rect.height - topPad - pad) / 5) * i;
+        for (let i = 0; i <= 8; i += 1) {
+          const gy = pad + ((rect.height - 2 * pad) * i / 8);
+          const gx = pad + ((rect.width - 2 * pad) * i / 8);
           posCtx.beginPath();
-          posCtx.moveTo(x, topPad);
-          posCtx.lineTo(x, rect.height - pad);
+          posCtx.moveTo(pad, gy);
+          posCtx.lineTo(rect.width - pad, gy);
           posCtx.stroke();
           posCtx.beginPath();
-          posCtx.moveTo(pad, y);
-          posCtx.lineTo(rect.width - pad, y);
+          posCtx.moveTo(gx, pad);
+          posCtx.lineTo(gx, rect.height - pad);
           posCtx.stroke();
         }
-        drawYScaleLabels(posCtx, rect, pad, topPad, pad, pad, -span, span, 3, " m");
-        drawXScaleLabels(posCtx, rect, pad, topPad, pad, pad, -span, span, 3, " m");
-        const pts = plotState.x.map((xv, i) => {
-          const yv = plotState.y[i];
-          const x = clamp(pad + ((xv + span) / (2 * span)) * (rect.width - pad * 2), pad, rect.width - pad);
-          const y = clamp(rect.height - pad - ((yv + span) / (2 * span)) * (rect.height - topPad - pad), topPad, rect.height - pad);
-          return { x, y };
-        });
-        posCtx.strokeStyle = "rgba(147,51,234,0.6)";
-        posCtx.lineWidth = 2.4;
+
+        const ox = toPx(0);
+        const oy = toPy(0);
+        posCtx.strokeStyle = "#94a3b8";
+        posCtx.lineWidth = 1.6;
         posCtx.beginPath();
-        posCtx.moveTo(pts[0].x, pts[0].y);
-        for (let i = 1; i < pts.length - 1; i += 1) {
-          const midX = (pts[i].x + pts[i + 1].x) / 2;
-          const midY = (pts[i].y + pts[i + 1].y) / 2;
-          posCtx.quadraticCurveTo(pts[i].x, pts[i].y, midX, midY);
-        }
+        posCtx.moveTo(pad, oy);
+        posCtx.lineTo(rect.width - pad, oy);
+        posCtx.stroke();
+        posCtx.beginPath();
+        posCtx.moveTo(ox, pad);
+        posCtx.lineTo(ox, rect.height - pad);
         posCtx.stroke();
 
-        const last = pts[pts.length - 1];
-        // origin marker
-        const originX = pad + (0.5 * (rect.width - pad * 2));
-        const originY = rect.height - pad - (0.5 * (rect.height - topPad - pad));
-        posCtx.fillStyle = "#facc15";
-        posCtx.beginPath();
-        posCtx.arc(originX, originY, 5, 0, Math.PI * 2);
-        posCtx.fill();
+        posCtx.fillStyle = "#334155";
+        posCtx.font = "12px sans-serif";
+        posCtx.fillText("Longitude East (+X)", rect.width - pad - 130, oy - 8);
+        posCtx.fillText("Latitude North (+Y)", ox + 6, pad - 8);
+        posCtx.fillText("Home Lat/Lon (0,0)", ox + 8, oy - 8);
 
-        drawHeadingArrow(
-          posCtx,
-          last.x,
-          last.y,
-          plotState.currentHeadingDeg,
-          12,
-          "#dc2626"
-        );
-
-        posCtx.fillStyle = "#111";
-        posCtx.font = "11px sans-serif";
-        posCtx.fillText("Trajectory", rect.width - 128, 16);
-        posCtx.fillStyle = "#9333ea";
-        posCtx.fillRect(rect.width - 148, 8, 14, 4);
-        posCtx.fillStyle = "#111";
-        posCtx.fillText("Current", rect.width - 128, 30);
-        posCtx.fillStyle = "#dc2626";
+        posCtx.strokeStyle = "#16a34a";
+        posCtx.lineWidth = 2.2;
         posCtx.beginPath();
-        posCtx.moveTo(rect.width - 142, 24);
-        posCtx.lineTo(rect.width - 148, 34);
-        posCtx.lineTo(rect.width - 136, 34);
-        posCtx.closePath();
-        posCtx.fill();
-        posCtx.fillStyle = "#111";
-        posCtx.fillText("Home Origin", rect.width - 128, 44);
-        posCtx.fillStyle = "#facc15";
-        posCtx.fillRect(rect.width - 148, 38, 10, 10);
-        const currX = plotState.x[plotState.x.length - 1] ?? 0;
-        const currY = plotState.y[plotState.y.length - 1] ?? 0;
-        drawStatLabel(posCtx, 8, 10, `x ${currX.toFixed(3)} m y ${currY.toFixed(3)} m`, "#333");
-        if (Number.isFinite(plotState.currentHeadingDeg)) {
-          drawStatLabel(
-            posCtx,
-            8,
-            48,
-            `compass hdg ${plotState.currentHeadingDeg.toFixed(1)}°`,
-            "#dc2626"
-          );
+        let moved = false;
+        for (let i = 0; i < plotState.x.length; i += 1) {
+          const x = plotState.x[i];
+          const y = plotState.y[i];
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          const px = toPx(x);
+          const py = toPy(y);
+          if (!moved) {
+            posCtx.moveTo(px, py);
+            moved = true;
+          } else {
+            posCtx.lineTo(px, py);
+          }
         }
+        if (!moved) return;
+        posCtx.stroke();
+
+        const lx = plotState.x[plotState.x.length - 1] ?? 0;
+        const ly = plotState.y[plotState.y.length - 1] ?? 0;
+        const lpx = toPx(lx);
+        const lpy = toPy(ly);
+        const hasHeading = Number.isFinite(Number(plotState.currentHeadingDeg));
+        const vx = Number(plotState.currentVxWorldMps);
+        const vy = Number(plotState.currentVyWorldMps);
+        const hasVel = Number.isFinite(vx) && Number.isFinite(vy);
+
+        if (hasVel) {
+          const maxVelRef = 1.0;
+          const normX = Math.max(-1, Math.min(1, vx / maxVelRef));
+          const normY = Math.max(-1, Math.min(1, vy / maxVelRef));
+          const tipX = lpx + normX * (rect.width - 2 * pad) * 0.12;
+          const tipY = lpy - normY * (rect.height - 2 * pad) * 0.12;
+          const dirX = tipX - lpx;
+          const dirY = tipY - lpy;
+          const mag = Math.hypot(dirX, dirY);
+          if (mag > 1e-6) {
+            const ux = dirX / mag;
+            const uy = dirY / mag;
+            const nx = -uy;
+            const ny = ux;
+            const head = 11;
+            const wing = 6;
+            const baseX = tipX - ux * head;
+            const baseY = tipY - uy * head;
+
+            posCtx.strokeStyle = "rgba(15,23,42,0.20)";
+            posCtx.lineWidth = 8;
+            posCtx.beginPath();
+            posCtx.moveTo(lpx + 2, lpy + 2);
+            posCtx.lineTo(baseX + 2, baseY + 2);
+            posCtx.stroke();
+
+            posCtx.strokeStyle = "#2563eb";
+            posCtx.lineWidth = 5;
+            posCtx.beginPath();
+            posCtx.moveTo(lpx, lpy);
+            posCtx.lineTo(baseX, baseY);
+            posCtx.stroke();
+
+            posCtx.fillStyle = "#1d4ed8";
+            posCtx.beginPath();
+            posCtx.moveTo(tipX, tipY);
+            posCtx.lineTo(baseX + nx * wing, baseY + ny * wing);
+            posCtx.lineTo(baseX - nx * wing, baseY - ny * wing);
+            posCtx.closePath();
+            posCtx.fill();
+          }
+        }
+
+        if (hasHeading) {
+          const headingRad = Number(plotState.currentHeadingDeg) * Math.PI / 180.0;
+          drawOpLatArrow(posCtx, lpx, lpy, headingRad, 26, 8, 10, 4, "#dc2626", "#ef4444", 2.5);
+        }
+
+        const markerHeadingDeg = hasHeading
+          ? Number(plotState.currentHeadingDeg)
+          : (hasVel ? ((Math.atan2(vx, vy) * 180.0 / Math.PI + 360.0) % 360.0) : null);
+        if (Number.isFinite(markerHeadingDeg)) {
+          const a = Number(markerHeadingDeg) * Math.PI / 180.0;
+          drawOpLatArrow(posCtx, lpx, lpy, a, 16, 6, 7, 3, "#030712", "#111827", 2.2);
+        } else {
+          posCtx.fillStyle = "#111827";
+          posCtx.beginPath();
+          posCtx.arc(lpx, lpy, 3, 0, Math.PI * 2);
+          posCtx.fill();
+        }
+
+        const hdgText = hasHeading ? Number(plotState.currentHeadingDeg).toFixed(1) : "--";
+        const vxText = hasVel ? vx.toFixed(3) : "--";
+        const vyText = hasVel ? vy.toFixed(3) : "--";
+        posCtx.fillStyle = "#0f172a";
+        posCtx.font = "12px monospace";
+        posCtx.fillText(`vx=${vxText} m/s  vy=${vyText} m/s  zrot=${hdgText} deg`, lpx + 10, lpy - 12);
       };
 
       const drawVoPosPlot = () => {
@@ -3600,6 +3721,8 @@
           );
           let posX = opLatIntegrated.x;
           let posY = opLatIntegrated.y;
+          plotState.currentVxWorldMps = opLatIntegrated.vxWorld;
+          plotState.currentVyWorldMps = opLatIntegrated.vyWorld;
           filterState.x = posX;
           filterState.y = posY;
           setText("rt-x", posX, 3);
@@ -3742,21 +3865,11 @@
         logEl.textContent = logState.lines.join("\n");
       };
 
-      const openOpticalBigView = async () => {
-        const targetCard = openOfBigViewBtn ? openOfBigViewBtn.closest(".card") : null;
-        if (!targetCard) return;
-        try {
-          if (document.fullscreenElement) {
-            await document.exitFullscreen();
-            return;
-          }
-          if (targetCard.requestFullscreen) {
-            await targetCard.requestFullscreen();
-            return;
-          }
-          appendLog("big view unsupported: fullscreen API not available");
-        } catch (err) {
-          appendLog(`big view failed: ${err?.message || "fullscreen error"}`);
+      const openOpticalBigView = () => {
+        const url = "/oplat_big_view.html";
+        const w = window.open(url, "_blank", "noopener,noreferrer");
+        if (!w) {
+          window.location.href = url;
         }
       };
 
