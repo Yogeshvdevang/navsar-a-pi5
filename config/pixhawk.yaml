@@ -24,8 +24,8 @@ gps_timeout_s: 2.0
 gps_min_fix_type: 3
 gps_input:
   enabled: true
-  port: /dev/ttyAMA5
-  baud: 230400
+  port: /dev/ttyAMA4
+  baud: 9600
   format: auto
   startup_wait_s: 5
   init_wait_s: 3
@@ -47,7 +47,7 @@ gps_serial:
 optical_flow:
   enabled: true
   data_mode: stable
-  port: /dev/ttyAMA3
+  port: /dev/ttyAMA2
   baud: 115200
   rate_hz: 60.0
   altitude_offset_m: 500.0
