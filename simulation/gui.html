@@ -469,6 +469,26 @@
         font-family: "JetBrains Mono", ui-monospace, monospace;
         font-size: 11px;
       }
+      .pix-attitude-layout {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) 220px;
+        gap: 10px;
+        align-items: stretch;
+      }
+      .pix-att-preview-wrap {
+        background: #000;
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+        padding: 6px;
+      }
+      .pix-att-preview-wrap iframe {
+        width: 100%;
+        height: 168px;
+        display: block;
+        border-radius: 8px;
+        background: #050505;
+        border: 0;
+      }
 
       .kv div {
         padding: 4px 0;
@@ -705,6 +725,9 @@
         .plot-row {
           grid-template-columns: 1fr;
         }
+        .pix-attitude-layout {
+          grid-template-columns: 1fr;
+        }
         .gps-calibration-grid {
           grid-template-columns: 1fr;
         }
@@ -913,6 +936,23 @@
             </div>
           </div>
           <div class="card" style="background:#000; border-color:#1a1a1a;">
+            <h3>Pixhawk MAVLink Attitude</h3>
+            <div class="mode-buttons" style="margin-bottom:8px;">
+              <button id="open-mavlink-big-view-btn" type="button">Open Big View (MAVLink)</button>
+            </div>
+            <div class="pix-attitude-layout">
+              <div class="kv">
+                <div>Roll (deg)</div><div id="pix-roll-deg">--</div>
+                <div>Pitch (deg)</div><div id="pix-pitch-deg">--</div>
+                <div>Yaw (deg)</div><div id="pix-yaw-deg">--</div>
+                <div>Altitude ASML (m)</div><div id="pix-alt-asml">--</div>
+              </div>
+              <div class="pix-att-preview-wrap">
+                <iframe id="pix-attitude-preview-frame" src="/drone_simulation.html?embed=1" title="Pixhawk Attitude Live Preview"></iframe>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="background:#000; border-color:#1a1a1a;">
             <h3>Real-Time Values</h3>
             <div class="kv">
               <div>Height (m)</div><div id="rt-height">--</div>
@@ -1023,12 +1063,12 @@
             </div>
           </div>
           <div class="card barometer-card">
-            <h3>Barometer Height (m)</h3>
+            <h3>Drone Altitude ASML (m)</h3>
             <div class="plot-wrap baro-portrait">
               <canvas id="barometer-height-plot"></canvas>
             </div>
             <div class="gps-origin-note" style="margin-top:8px;">
-              baro_alt_m: <strong id="baro-alt-m">--</strong>
+              ASML (barometer): <strong id="baro-alt-m">--</strong> | AGL (lidar): <strong id="lidar-agl-m">--</strong>
             </div>
           </div>
           <div class="card span-2" id="gps-calibration-card">
@@ -1297,7 +1337,6 @@
         barometerHeight: [],
         gpsSensorHeight: [],
         gpsPortFinalHeight: [],
-        finalAltitudeOffsetM: null,
         opticalHeight: [],
         corrVx: [],
         corrVy: [],
@@ -1713,6 +1752,7 @@
         camSimCtx.font = "12px JetBrains Mono, monospace";
         camSimCtx.fillText("CAMERA SIMULATION", 12, h - 14);
       };
+
 
       const cameraLoop = (tMs) => {
         if (!streamState.running) return;
@@ -3333,8 +3373,9 @@
         const baroValue = plotState.barometerHeight[plotState.barometerHeight.length - 1] ?? 0;
         const gpsValue = plotState.gpsSensorHeight[plotState.gpsSensorHeight.length - 1] ?? NaN;
         const gpsPortValue = plotState.gpsPortFinalHeight[plotState.gpsPortFinalHeight.length - 1] ?? NaN;
-        const offsetValue = Number.isFinite(plotState.finalAltitudeOffsetM)
-          ? plotState.finalAltitudeOffsetM
+        const lidarAglValue = plotState.opticalHeight[plotState.opticalHeight.length - 1] ?? NaN;
+        const groundAsmlValue = Number.isFinite(baroValue) && Number.isFinite(lidarAglValue)
+          ? (baroValue - lidarAglValue)
           : NaN;
         const safeBaroValue = Number.isFinite(baroValue) ? baroValue : 0;
         const safeGpsValue = Number.isFinite(gpsValue) ? gpsValue : safeBaroValue;
@@ -3344,7 +3385,7 @@
             plotState.barometerHeight,
             plotState.gpsSensorHeight,
             plotState.gpsPortFinalHeight,
-            [offsetValue],
+            [groundAsmlValue],
             [safeBaroValue],
             [safeGpsValue],
             [safeGpsPortValue],
@@ -3404,19 +3445,19 @@
         barometerHeightCtx.fillStyle = "#facc15";
         barometerHeightCtx.fillRect(gpsPortX, gpsPortY, barW, Math.max(2, gpsPortH));
 
-        if (Number.isFinite(offsetValue)) {
-          const offsetRatio = (offsetValue - minVal) / Math.max(1e-6, maxVal - minVal);
-          const offsetY = clamp(padTop + chartH - offsetRatio * chartH, padTop, padTop + chartH);
+        if (Number.isFinite(groundAsmlValue)) {
+          const groundRatio = (groundAsmlValue - minVal) / Math.max(1e-6, maxVal - minVal);
+          const groundY = clamp(padTop + chartH - groundRatio * chartH, padTop, padTop + chartH);
           barometerHeightCtx.strokeStyle = "#dc2626";
           barometerHeightCtx.lineWidth = 2;
           barometerHeightCtx.beginPath();
-          barometerHeightCtx.moveTo(padLeft, offsetY);
-          barometerHeightCtx.lineTo(padLeft + chartW, offsetY);
+          barometerHeightCtx.moveTo(padLeft, groundY);
+          barometerHeightCtx.lineTo(padLeft + chartW, groundY);
           barometerHeightCtx.stroke();
           barometerHeightCtx.fillStyle = "#dc2626";
           barometerHeightCtx.textAlign = "right";
           barometerHeightCtx.font = "11px sans-serif";
-          barometerHeightCtx.fillText(`Offset ${offsetValue.toFixed(3)} m`, padLeft + chartW - 4, offsetY - 4);
+          barometerHeightCtx.fillText(`Ground ASML ${groundAsmlValue.toFixed(3)} m`, padLeft + chartW - 4, groundY - 4);
         }
 
         barometerHeightCtx.fillStyle = "#111";
@@ -3429,7 +3470,7 @@
         );
         barometerHeightCtx.font = "11px sans-serif";
         barometerHeightCtx.fillText(
-          "Barometer (green)  GPS sensor (blue)  GPS port final (yellow)",
+          "ASML Barometer (green)  GPS sensor (blue)  GPS port final (yellow)  Ground ASML (red)",
           rect.width / 2,
           rect.height - 10
         );
@@ -3529,6 +3570,13 @@
               : null
           );
           const pixhawkCompassHeading = denoisePixhawkHeading(pixhawkCompassHeadingRaw);
+          const pixhawkRollDeg = asFiniteNumber(data.sensors?.attitude?.roll) != null
+            ? (Number(data.sensors.attitude.roll) * 180.0) / Math.PI
+            : null;
+          const pixhawkPitchDeg = asFiniteNumber(data.sensors?.attitude?.pitch) != null
+            ? (Number(data.sensors.attitude.pitch) * 180.0) / Math.PI
+            : null;
+          const pixhawkYawDeg = pixhawkCompassHeadingRaw;
 
           const isOptical = data?.source === "optical_flow" || String(data?.mode || "").startsWith("optical_flow");
           let rawVx = isOptical
@@ -3665,10 +3713,6 @@
             voDx: asFiniteNumber(data.camera?.dx),
             voDy: asFiniteNumber(data.camera?.dy),
           });
-          const finalAltitudeOffsetM = asFiniteNumber(
-            data.optical_altitude_offset_m,
-            data.final_altitude_offset_m
-          );
           const rawAltitude =
             asFiniteNumber(
               opticalHeightM,
@@ -3701,9 +3745,6 @@
           const gpsPortFinalHeightForPlot = Number.isFinite(gpsPortFinalAltitudeM)
             ? gpsPortFinalAltitudeM
             : (plotState.gpsPortFinalHeight[plotState.gpsPortFinalHeight.length - 1] ?? NaN);
-          plotState.finalAltitudeOffsetM = Number.isFinite(finalAltitudeOffsetM)
-            ? finalAltitudeOffsetM
-            : plotState.finalAltitudeOffsetM;
           filterState.vx = vx;
           filterState.vy = vy;
           filterState.height = altitude;
@@ -3802,6 +3843,11 @@
           setText("rt-height", altitude, 3);
           setText("rt-of-height", opticalHeightM, 3);
           setText("baro-alt-m", barometerAltM, 3);
+          setText("lidar-agl-m", opticalHeightM, 3);
+          setText("pix-roll-deg", pixhawkRollDeg, 2);
+          setText("pix-pitch-deg", pixhawkPitchDeg, 2);
+          setText("pix-yaw-deg", pixhawkYawDeg, 2);
+          setText("pix-alt-asml", barometerAltM, 3);
           setText("rt-vx", vx, 3);
           setText("rt-vy", vy, 3);
           const opticalBodyVx = asFiniteNumber(
@@ -3945,6 +3991,7 @@
       const autoCalibStatusEl = document.getElementById("auto-calib-status");
       const openOfBigViewBtn = document.getElementById("open-of-big-view-btn");
       const openVoBigViewBtn = document.getElementById("open-vo-big-view-btn");
+      const openMavlinkBigViewBtn = document.getElementById("open-mavlink-big-view-btn");
       const ofHeadingButtons = Array.from(document.querySelectorAll("#of-heading-buttons button"));
       const voHeadingButtons = Array.from(document.querySelectorAll("#vo-heading-buttons button"));
       const gpsTrajHeadingButtons = Array.from(document.querySelectorAll("#gps-traj-heading-buttons button"));
@@ -4002,6 +4049,13 @@
       };
       const openVoBigView = () => {
         const url = "/vo_big_view.html";
+        const w = window.open(url, "_blank", "noopener,noreferrer");
+        if (!w) {
+          window.location.href = url;
+        }
+      };
+      const openMavlinkBigView = () => {
+        const url = "/drone_simulation.html";
         const w = window.open(url, "_blank", "noopener,noreferrer");
         if (!w) {
           window.location.href = url;
@@ -5064,6 +5118,9 @@
       }
       if (openVoBigViewBtn) {
         openVoBigViewBtn.addEventListener("click", openVoBigView);
+      }
+      if (openMavlinkBigViewBtn) {
+        openMavlinkBigViewBtn.addEventListener("click", openMavlinkBigView);
       }
       if (ofEnvSelect) ofEnvSelect.addEventListener("change", updateOpticalScaleInputFromSelection);
       if (ofLightSelect) ofLightSelect.addEventListener("change", updateOpticalScaleInputFromSelection);
