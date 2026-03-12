@@ -162,9 +162,70 @@
             border-radius: 6px;
             background: #0f172a;
         }
+        #manual-sim-canvas {
+            width: 100%;
+            height: 180px;
+            display: block;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            background: #0f172a;
+        }
         .output-sim-note {
             font-size: 10px;
             color: #94a3b8;
+        }
+        .manual-sim-grid {
+            display: grid;
+            grid-template-columns: auto auto auto 1fr;
+            gap: 6px;
+            align-items: center;
+        }
+        .manual-sim-controls {
+            font-size: 10px;
+            color: #cbd5e1;
+            line-height: 1.35;
+            text-align: right;
+        }
+        .trail-legend {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px 10px;
+            padding: 6px 2px 2px 2px;
+            font-size: 10px;
+            color: #cbd5e1;
+        }
+        .trail-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .trail-swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            flex: 0 0 10px;
+        }
+        .output-ekf-panel {
+            background: #020617;
+            border: 1px solid #1e293b;
+            border-radius: 6px;
+            padding: 6px;
+        }
+        #output-ekf-compute {
+            margin: 0;
+            min-height: 110px;
+            max-height: 180px;
+            overflow-y: auto;
+            background: #000;
+            border: 1px solid #1f2937;
+            border-radius: 6px;
+            padding: 8px;
+            color: #c7d2fe;
+            font-size: 10px;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            font-family: 'Consolas', 'Courier New', monospace;
         }
 
         /* VIEWPORT CONTAINER */
@@ -279,6 +340,35 @@
                 </div>
                 <canvas id="output-sim-canvas"></canvas>
                 <div class="output-sim-note" id="output-sim-note">Waiting for optical flow + altitude stream...</div>
+                <div class="trail-legend" aria-label="Trail color legend">
+                    <span class="trail-item"><span class="trail-swatch" style="background:#ffffff;"></span> +x direction</span>
+                    <span class="trail-item"><span class="trail-swatch" style="background:#22c55e;"></span> -x direction</span>
+                    <span class="trail-item"><span class="trail-swatch" style="background:#3b82f6;"></span> +y direction</span>
+                    <span class="trail-item"><span class="trail-swatch" style="background:#facc15;"></span> -y direction</span>
+                </div>
+                <div class="output-ekf-panel">
+                    <div class="sec-title" style="margin-bottom:6px;">5. EKF Computation (Disabled)</div>
+                    <pre id="output-ekf-compute">EKF OF+IMU mode removed.</pre>
+                </div>
+            </div>
+            <div class="output-sim-panel">
+                <div class="sec-title" style="margin-bottom:0;">6. Manual Flight Simulator</div>
+                <div class="manual-sim-grid">
+                    <button class="btn-follow" type="button" id="manual-sim-fly-btn">Fly: OFF</button>
+                    <button class="btn-home" type="button" id="manual-sim-reset-btn">Reset</button>
+                    <button class="btn-follow" type="button" id="manual-sim-track-btn">Track: OFF</button>
+                    <div class="manual-sim-controls">
+                        Controls: 7 yaw left, 9 yaw right, 8 front, 4 left, 6 right, 2 back, 5 throttle up, 0 throttle down
+                    </div>
+                </div>
+                <canvas id="manual-sim-canvas"></canvas>
+                <div class="output-sim-note" id="manual-sim-note">Click Fly to enable number-key flight controls.</div>
+                <div class="trail-legend" aria-label="Manual trail color legend">
+                    <span class="trail-item"><span class="trail-swatch" style="background:#ffffff;"></span> +x direction</span>
+                    <span class="trail-item"><span class="trail-swatch" style="background:#22c55e;"></span> -x direction</span>
+                    <span class="trail-item"><span class="trail-swatch" style="background:#3b82f6;"></span> +y direction</span>
+                    <span class="trail-item"><span class="trail-swatch" style="background:#facc15;"></span> -y direction</span>
+                </div>
             </div>
         </div>
     </div>
@@ -375,7 +465,16 @@
             mavlinkAttitude: { rollDeg: 0, pitchDeg: 0, yawDeg: 0, altAsmlM: null, fresh: false },
             positionRaw: { x: 0, y: 0, z: 0, fresh: false, source: "none" },
             positionOrigin: null,
-            flowRaw: { vx: 0, vy: 0, fresh: false },
+            flowRaw: {
+                vx: 0,
+                vy: 0,
+                rateX: null,
+                rateY: null,
+                quality: null,
+                flowOk: null,
+                fresh: false
+            },
+            imuRaw: { ax: 0, ay: 0, az: 0, gx: 0, gy: 0, gz: 0, fresh: false },
             lidarAglM: null,
             telemetryTsMs: null,
             outputSim: {
@@ -388,7 +487,33 @@
                 altOrigin: null,
                 trackEnabled: false,
                 cameraOffset: null,
+                ekf: null,
+                trail: null,
                 ready: false,
+            },
+            manualSim: {
+                scene: null,
+                camera: null,
+                renderer: null,
+                droneGroup: null,
+                pos: null,
+                yawDeg: 0,
+                trackEnabled: false,
+                cameraOffset: null,
+                trail: null,
+                ready: false,
+                flyEnabled: false,
+                lastFrameTsMs: null,
+                keyState: {
+                    front: false,
+                    back: false,
+                    left: false,
+                    right: false,
+                    yawLeft: false,
+                    yawRight: false,
+                    throttleUp: false,
+                    throttleDown: false,
+                },
             },
             mavlinkPollTimer: null
         };
@@ -409,7 +534,13 @@
             outputSimMoveSource: document.getElementById('output-sim-move-source'),
             outputSimResetBtn: document.getElementById('output-sim-reset-btn'),
             outputSimTrackBtn: document.getElementById('output-sim-track-btn'),
-            outputSimNote: document.getElementById('output-sim-note')
+            outputSimNote: document.getElementById('output-sim-note'),
+            outputEkfCompute: document.getElementById('output-ekf-compute'),
+            manualSimCanvas: document.getElementById('manual-sim-canvas'),
+            manualSimFlyBtn: document.getElementById('manual-sim-fly-btn'),
+            manualSimResetBtn: document.getElementById('manual-sim-reset-btn'),
+            manualSimTrackBtn: document.getElementById('manual-sim-track-btn'),
+            manualSimNote: document.getElementById('manual-sim-note'),
         };
         const dataUrl = (window.location.protocol === "file:")
             ? "http://127.0.0.1:8765/data"
@@ -510,16 +641,410 @@
         const setOutputSimNote = (text) => {
             if (ui.outputSimNote) ui.outputSimNote.innerText = text;
         };
+        const setManualSimNote = (text) => {
+            if (ui.manualSimNote) ui.manualSimNote.innerText = text;
+        };
+        const createDirectionalTrailState = (sceneRef) => {
+            const colors = {
+                posX: 0xffffff, // +x
+                negX: 0x22c55e, // -x
+                posY: 0x3b82f6, // +y (mapped on sim z-axis)
+                negY: 0xfacc15, // -y (mapped on sim z-axis)
+            };
+            const maxSegments = 450;
+            const stateTrail = {
+                maxSegments,
+                lastPos: null,
+                posX: { data: [], geom: new THREE.BufferGeometry(), line: null },
+                negX: { data: [], geom: new THREE.BufferGeometry(), line: null },
+                posY: { data: [], geom: new THREE.BufferGeometry(), line: null },
+                negY: { data: [], geom: new THREE.BufferGeometry(), line: null },
+            };
+            Object.keys(colors).forEach((key) => {
+                const mat = new THREE.LineBasicMaterial({
+                    color: colors[key],
+                    transparent: true,
+                    opacity: 0.95,
+                });
+                const line = new THREE.LineSegments(stateTrail[key].geom, mat);
+                stateTrail[key].line = line;
+                sceneRef.add(line);
+            });
+            return stateTrail;
+        };
+        const clearDirectionalTrail = (trailState) => {
+            if (!trailState) return;
+            ["posX", "negX", "posY", "negY"].forEach((k) => {
+                trailState[k].data.length = 0;
+                trailState[k].geom.setAttribute(
+                    "position",
+                    new THREE.Float32BufferAttribute([], 3)
+                );
+                trailState[k].geom.computeBoundingSphere();
+            });
+            trailState.lastPos = null;
+        };
+        const pushTrailSegment = (trailState, fromV, toV) => {
+            if (!trailState || !fromV || !toV) return;
+            const dx = toV.x - fromV.x;
+            const dz = toV.z - fromV.z;
+            const planar = Math.hypot(dx, dz);
+            if (!Number.isFinite(planar) || planar < 0.01) return;
+            let key = "posX";
+            if (Math.abs(dx) >= Math.abs(dz)) {
+                key = dx >= 0 ? "posX" : "negX";
+            } else {
+                key = dz >= 0 ? "posY" : "negY";
+            }
+            const bucket = trailState[key];
+            bucket.data.push(fromV.x, fromV.y, fromV.z, toV.x, toV.y, toV.z);
+            const maxLen = trailState.maxSegments * 6;
+            if (bucket.data.length > maxLen) {
+                bucket.data.splice(0, bucket.data.length - maxLen);
+            }
+            bucket.geom.setAttribute(
+                "position",
+                new THREE.Float32BufferAttribute(bucket.data, 3)
+            );
+            bucket.geom.computeBoundingSphere();
+        };
+        const setEkfComputeText = (text) => {
+            if (ui.outputEkfCompute) ui.outputEkfCompute.innerText = text;
+        };
+        const computeFlowVelocityPx4Style = ({
+            flowRateX,
+            flowRateY,
+            gyroX,
+            gyroY,
+            rangeM,
+            yawDeg,
+        }) => {
+            if (
+                !Number.isFinite(flowRateX)
+                || !Number.isFinite(flowRateY)
+                || !Number.isFinite(rangeM)
+                || !Number.isFinite(yawDeg)
+            ) {
+                return null;
+            }
+            const gx = Number.isFinite(gyroX) ? gyroX : 0;
+            const gy = Number.isFinite(gyroY) ? gyroY : 0;
+            // PX4-style concept: compensate body angular rate from optical-flow rate first.
+            const flowRateCompX = flowRateX - gy;
+            const flowRateCompY = flowRateY + gx;
+            // Convert LOS rates to body-frame linear velocity using range.
+            const vFwd = flowRateCompX * rangeM;
+            const vRight = flowRateCompY * rangeM;
+            // Body (forward/right) -> world (east/north), then map north to sim-z(-north).
+            const yawRad = (yawDeg * Math.PI) / 180.0;
+            const sinY = Math.sin(yawRad);
+            const cosY = Math.cos(yawRad);
+            const vEast = vFwd * sinY + vRight * cosY;
+            const vNorth = vFwd * cosY - vRight * sinY;
+            return {
+                vWorldX: vEast,
+                vWorldZ: -vNorth,
+                flowRateCompX,
+                flowRateCompY,
+            };
+        };
+        const createOutputEkfState = () => ({
+            // state vector: [x, z, vx, vz, y, vy]
+            x: [0, 0, 0, 0, 0, 0],
+            // covariance matrix (6x6)
+            p: [
+                [4.0, 0, 0, 0, 0, 0],
+                [0, 4.0, 0, 0, 0, 0],
+                [0, 0, 1.0, 0, 0, 0],
+                [0, 0, 0, 1.0, 0, 0],
+                [0, 0, 0, 0, 2.0, 0],
+                [0, 0, 0, 0, 0, 1.0],
+            ],
+            init: false,
+            lastOfVx: null,
+            lastOfVz: null,
+            lastHeight: null,
+            lastResidualMps: 0,
+            lastHeightResidualM: 0,
+            lastKVx: 0,
+            lastKVz: 0,
+            lastKHeight: 0,
+            lastAxWorld: 0,
+            lastAzWorld: 0,
+            lastAxCorr: 0,
+            lastAzCorr: 0,
+            lastDt: 0,
+            ofRejectCount: 0,
+            lastAglGate: false,
+            lastTiltGate: false,
+            lastQualityGate: false,
+            lastInnovGate: false,
+            lastFlowRateCompX: 0,
+            lastFlowRateCompY: 0,
+            biasAx: 0,
+            biasAz: 0,
+            stationaryCount: 0,
+        });
+        const EKF_OF_AGL_MIN_M = 1.0;
+        const EKF_OF_AGL_MAX_M = 8.0;
+        const EKF_OF_MIN_QUALITY = 40;
+        const EKF_OF_MAX_TILT_DEG = 35.0;
+        const ekfPredictOutput = (ekf, dt, ax, az, ay) => {
+            const x = ekf.x;
+            const posNoise = 0.02;
+            const sigmaA = 1.8;
+            const dt2 = dt * dt;
+            const halfDt2 = 0.5 * dt2;
+            // x <- f(x, a)
+            x[0] += x[2] * dt + halfDt2 * ax;
+            x[1] += x[3] * dt + halfDt2 * az;
+            x[2] += ax * dt;
+            x[3] += az * dt;
+            x[4] += x[5] * dt + halfDt2 * ay;
+            x[5] += ay * dt;
+
+            // Linearized covariance update for CV model with accel input.
+            const A = [
+                [1, 0, dt, 0, 0, 0],
+                [0, 1, 0, dt, 0, 0],
+                [0, 0, 1, 0, 0, 0],
+                [0, 0, 0, 1, 0, 0],
+                [0, 0, 0, 0, 1, dt],
+                [0, 0, 0, 0, 0, 1],
+            ];
+            const q = sigmaA * sigmaA;
+            const Q = [
+                [q * 0.25 * dt2 * dt2 + posNoise, 0, q * 0.5 * dt2 * dt, 0, 0, 0],
+                [0, q * 0.25 * dt2 * dt2 + posNoise, 0, q * 0.5 * dt2 * dt, 0, 0],
+                [q * 0.5 * dt2 * dt, 0, q * dt2 + 0.03, 0, 0, 0],
+                [0, q * 0.5 * dt2 * dt, 0, q * dt2 + 0.03, 0, 0],
+                [0, 0, 0, 0, q * 0.25 * dt2 * dt2 + 0.01, q * 0.5 * dt2 * dt],
+                [0, 0, 0, 0, q * 0.5 * dt2 * dt, q * dt2 + 0.02],
+            ];
+            const p = ekf.p;
+            const n = 6;
+            const ap = Array.from({ length: n }, () => Array.from({ length: n }, () => 0));
+            for (let i = 0; i < n; i += 1) {
+                for (let j = 0; j < n; j += 1) {
+                    let sum = 0;
+                    for (let k = 0; k < n; k += 1) sum += A[i][k] * p[k][j];
+                    ap[i][j] = sum;
+                }
+            }
+            const apaT = Array.from({ length: n }, () => Array.from({ length: n }, () => 0));
+            for (let i = 0; i < n; i += 1) {
+                for (let j = 0; j < n; j += 1) {
+                    let sum = 0;
+                    for (let k = 0; k < n; k += 1) sum += ap[i][k] * A[j][k];
+                    apaT[i][j] = sum + Q[i][j];
+                }
+            }
+            ekf.p = apaT;
+        };
+        const ekfUpdateScalar = (
+            ekf,
+            idx,
+            meas,
+            rStd,
+            maxCorrection = Infinity,
+            rejectThreshold = Infinity,
+        ) => {
+            const innovRaw = meas - ekf.x[idx];
+            if (Math.abs(innovRaw) > rejectThreshold) {
+                return { applied: false, innovation: innovRaw, k: 0 };
+            }
+            const innovation = THREE.MathUtils.clamp(innovRaw, -maxCorrection, maxCorrection);
+            const p = ekf.p;
+            const s = p[idx][idx] + rStd * rStd;
+            if (!Number.isFinite(s) || s < 1e-9) {
+                return { applied: false, innovation, k: 0 };
+            }
+            const n = ekf.x.length;
+            const k = Array.from({ length: n }, (_, i) => p[i][idx] / s);
+            for (let i = 0; i < n; i += 1) {
+                ekf.x[i] += k[i] * innovation;
+            }
+            const oldP = p.map((row) => row.slice());
+            for (let i = 0; i < n; i += 1) {
+                for (let j = 0; j < n; j += 1) {
+                    p[i][j] = oldP[i][j] - k[i] * oldP[idx][j];
+                }
+            }
+            return { applied: true, innovation, k: k[idx] };
+        };
+        const ekfUpdateOutputVelocity = (ekf, vxMeas, vzMeas, dt) => {
+            // Innovation y = z - Hx where H maps velocity states vx,vz.
+            const y0Raw = vxMeas - ekf.x[2];
+            const y1Raw = vzMeas - ekf.x[3];
+            let y0 = y0Raw;
+            let y1 = y1Raw;
+            const residual = Math.hypot(y0, y1);
+            ekf.lastResidualMps = residual;
+
+            // IMU is the truth source here; reject large optical-flow innovations.
+            const rejectResidualMps = 0.9;
+            if (residual > rejectResidualMps) {
+                ekf.ofRejectCount += 1;
+                return;
+            }
+
+            // Cap per-frame OF correction so instantaneous spikes cannot move the drone.
+            const maxCorrPerStepMps = 0.20;
+            y0 = THREE.MathUtils.clamp(y0, -maxCorrPerStepMps, maxCorrPerStepMps);
+            y1 = THREE.MathUtils.clamp(y1, -maxCorrPerStepMps, maxCorrPerStepMps);
+
+            let rVel = 1.5;
+            if (ekf.lastOfVx != null && ekf.lastOfVz != null) {
+                const jerk = Math.hypot(vxMeas - ekf.lastOfVx, vzMeas - ekf.lastOfVz) / Math.max(0.02, dt);
+                // Noise bursts in optical flow are handled by inflating measurement noise.
+                if (jerk > 6.0) rVel = 4.0;
+                else if (jerk > 3.0) rVel = 2.5;
+            }
+            ekf.lastOfVx = vxMeas;
+            ekf.lastOfVz = vzMeas;
+            const upX = ekfUpdateScalar(ekf, 2, ekf.x[2] + y0, rVel, maxCorrPerStepMps, 2.0);
+            const upZ = ekfUpdateScalar(ekf, 3, ekf.x[3] + y1, rVel, maxCorrPerStepMps, 2.0);
+            ekf.lastKVx = upX.k;
+            ekf.lastKVz = upZ.k;
+        };
         const resetOutputSimulation = () => {
             if (!state.outputSim.ready) return;
             state.outputSim.pos.set(0, 0, 0);
             state.outputSim.lastTsMs = null;
             state.outputSim.altOrigin = null;
+            state.outputSim.ekf = createOutputEkfState();
             state.outputSim.droneGroup.position.set(0, 0, 0);
+            clearDirectionalTrail(state.outputSim.trail);
+            setEkfComputeText("EKF OF+IMU mode removed.");
             if (state.outputSim.trackEnabled && state.outputSim.camera && state.outputSim.cameraOffset) {
                 state.outputSim.camera.position.copy(state.outputSim.droneGroup.position).add(state.outputSim.cameraOffset);
                 state.outputSim.camera.lookAt(state.outputSim.droneGroup.position);
             }
+        };
+        const resetManualSimulation = () => {
+            if (!state.manualSim.ready) return;
+            state.manualSim.pos.set(0, 0, 0);
+            state.manualSim.yawDeg = 0;
+            state.manualSim.lastFrameTsMs = null;
+            state.manualSim.droneGroup.position.set(0, 0, 0);
+            clearDirectionalTrail(state.manualSim.trail);
+            applyDroneAttitude(0, 0, state.manualSim.yawDeg, state.manualSim.droneGroup);
+            if (state.manualSim.trackEnabled && state.manualSim.camera && state.manualSim.cameraOffset) {
+                state.manualSim.camera.position.copy(state.manualSim.droneGroup.position).add(state.manualSim.cameraOffset);
+                state.manualSim.camera.lookAt(state.manualSim.droneGroup.position);
+            }
+            setManualSimNote("Manual sim reset. Click Fly to enable number-key flight controls.");
+        };
+        const updateManualSimFlyButton = () => {
+            if (!ui.manualSimFlyBtn) return;
+            ui.manualSimFlyBtn.innerText = state.manualSim.flyEnabled ? "Fly: ON" : "Fly: OFF";
+            ui.manualSimFlyBtn.className = state.manualSim.flyEnabled ? "btn-follow active" : "btn-follow";
+        };
+        const setManualControlState = (code, isDown) => {
+            const keyMap = {
+                Numpad7: "yawLeft",
+                Numpad9: "yawRight",
+                Numpad8: "front",
+                Numpad4: "left",
+                Numpad6: "right",
+                Numpad2: "back",
+                Numpad5: "throttleUp",
+                Numpad0: "throttleDown",
+                Digit7: "yawLeft",
+                Digit9: "yawRight",
+                Digit8: "front",
+                Digit4: "left",
+                Digit6: "right",
+                Digit2: "back",
+                Digit5: "throttleUp",
+                Digit0: "throttleDown",
+            };
+            const mapped = keyMap[code];
+            if (!mapped) return false;
+            state.manualSim.keyState[mapped] = isDown;
+            return true;
+        };
+        const initManualInputHandlers = () => {
+            window.addEventListener("keydown", (ev) => {
+                const tag = document.activeElement?.tagName;
+                if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+                if (!state.manualSim.flyEnabled) return;
+                const handled = setManualControlState(ev.code, true);
+                if (handled) ev.preventDefault();
+            });
+            window.addEventListener("keyup", (ev) => {
+                const handled = setManualControlState(ev.code, false);
+                if (handled) ev.preventDefault();
+            });
+            window.addEventListener("blur", () => {
+                const k = state.manualSim.keyState;
+                Object.keys(k).forEach((key) => {
+                    k[key] = false;
+                });
+            });
+        };
+        const updateManualSimulation = () => {
+            if (!state.manualSim.ready || !state.manualSim.pos) return;
+            const nowMs = performance.now();
+            if (!Number.isFinite(state.manualSim.lastFrameTsMs)) {
+                state.manualSim.lastFrameTsMs = nowMs;
+            }
+            const dt = Math.max(0.001, Math.min(0.05, (nowMs - state.manualSim.lastFrameTsMs) / 1000.0));
+            state.manualSim.lastFrameTsMs = nowMs;
+            if (state.manualSim.flyEnabled) {
+                const k = state.manualSim.keyState;
+                const yawInput = (k.yawRight ? 1 : 0) - (k.yawLeft ? 1 : 0);
+                const forwardInput = (k.front ? 1 : 0) - (k.back ? 1 : 0);
+                const strafeInput = (k.right ? 1 : 0) - (k.left ? 1 : 0);
+                const throttleInput = (k.throttleUp ? 1 : 0) - (k.throttleDown ? 1 : 0);
+                const yawRateDegS = 90.0;
+                const moveSpeedMps = 2.8;
+                const verticalSpeedMps = 1.8;
+                state.manualSim.yawDeg = normalizeDeg(state.manualSim.yawDeg + yawInput * yawRateDegS * dt);
+                const yawRad = THREE.MathUtils.degToRad(state.manualSim.yawDeg);
+                const fwdX = Math.sin(yawRad);
+                const fwdZ = Math.cos(yawRad);
+                const rightX = Math.cos(yawRad);
+                const rightZ = -Math.sin(yawRad);
+                let planarFwd = forwardInput;
+                let planarStrafe = strafeInput;
+                const planarNorm = Math.hypot(planarFwd, planarStrafe);
+                if (planarNorm > 1) {
+                    planarFwd /= planarNorm;
+                    planarStrafe /= planarNorm;
+                }
+                state.manualSim.pos.x += (planarFwd * fwdX + planarStrafe * rightX) * moveSpeedMps * dt;
+                state.manualSim.pos.z += (planarFwd * fwdZ + planarStrafe * rightZ) * moveSpeedMps * dt;
+                state.manualSim.pos.y += throttleInput * verticalSpeedMps * dt;
+                if (state.manualSim.pos.y < 0) state.manualSim.pos.y = 0;
+            }
+            state.manualSim.droneGroup.position.lerp(state.manualSim.pos, 0.45);
+            applyDroneAttitude(0, 0, state.manualSim.yawDeg, state.manualSim.droneGroup);
+            if (state.manualSim.trail) {
+                const curr = state.manualSim.droneGroup.position.clone();
+                if (!state.manualSim.trail.lastPos) {
+                    state.manualSim.trail.lastPos = curr.clone();
+                } else {
+                    pushTrailSegment(state.manualSim.trail, state.manualSim.trail.lastPos, curr);
+                    state.manualSim.trail.lastPos.copy(curr);
+                }
+            }
+            if (state.manualSim.trackEnabled && state.manualSim.camera && state.manualSim.cameraOffset) {
+                state.manualSim.camera.position.copy(state.manualSim.droneGroup.position).add(state.manualSim.cameraOffset);
+                state.manualSim.camera.lookAt(state.manualSim.droneGroup.position);
+            }
+            const activeKeys = [];
+            if (state.manualSim.keyState.front) activeKeys.push("8");
+            if (state.manualSim.keyState.back) activeKeys.push("2");
+            if (state.manualSim.keyState.left) activeKeys.push("4");
+            if (state.manualSim.keyState.right) activeKeys.push("6");
+            if (state.manualSim.keyState.yawLeft) activeKeys.push("7");
+            if (state.manualSim.keyState.yawRight) activeKeys.push("9");
+            if (state.manualSim.keyState.throttleUp) activeKeys.push("5");
+            if (state.manualSim.keyState.throttleDown) activeKeys.push("0");
+            setManualSimNote(
+                `fly=${state.manualSim.flyEnabled ? "on" : "off"} | x=${state.manualSim.pos.x.toFixed(2)} y=${state.manualSim.pos.y.toFixed(2)} z=${state.manualSim.pos.z.toFixed(2)} yaw=${state.manualSim.yawDeg.toFixed(1)} | keys=${activeKeys.length ? activeKeys.join(",") : "none"}`
+            );
         };
         const initOutputSimulation = () => {
             if (isEmbed || !ui.outputSimCanvas) return;
@@ -552,6 +1077,8 @@
             state.outputSim.altOrigin = null;
             state.outputSim.trackEnabled = false;
             state.outputSim.cameraOffset = new THREE.Vector3(12, 12, 12);
+            state.outputSim.ekf = createOutputEkfState();
+            state.outputSim.trail = createDirectionalTrailState(scene2);
             state.outputSim.ready = true;
             const resize = () => {
                 const rect = ui.outputSimCanvas.getBoundingClientRect();
@@ -586,10 +1113,92 @@
             if (ui.outputSimMoveSource) {
                 ui.outputSimMoveSource.addEventListener("change", () => {
                     state.outputSim.lastTsMs = null;
+                    state.outputSim.ekf = createOutputEkfState();
+                    const mode = ui.outputSimMoveSource.value;
+                    if (mode === "optical_vxy") {
+                        setOutputSimNote("Optical flow direct mode active (raw vx/vy integration).");
+                    } else {
+                        setOutputSimNote("Hold position mode active.");
+                    }
+                    setEkfComputeText("EKF OF+IMU mode removed.");
                 });
             }
             window.addEventListener("resize", resize);
-            setOutputSimNote("Using Optical Flow vx/vy + ASML altitude.");
+            setOutputSimNote("Optical flow direct mode active (raw vx/vy integration).");
+            setEkfComputeText("EKF OF+IMU mode removed.");
+        };
+        const initManualSimulation = () => {
+            if (isEmbed || !ui.manualSimCanvas) return;
+            const scene3 = new THREE.Scene();
+            scene3.background = new THREE.Color(0x0f172a);
+            scene3.fog = new THREE.Fog(0x0f172a, 80, 240);
+            const camera3 = new THREE.PerspectiveCamera(38, 1, 0.1, 2000);
+            camera3.position.set(12, 12, 12);
+            camera3.lookAt(0, 0, 0);
+            const renderer3 = new THREE.WebGLRenderer({
+                canvas: ui.manualSimCanvas,
+                antialias: true,
+            });
+            renderer3.setPixelRatio(window.devicePixelRatio || 1);
+            const ambient3 = new THREE.AmbientLight(0xffffff, 0.7);
+            scene3.add(ambient3);
+            const dir3 = new THREE.DirectionalLight(0xffffff, 0.9);
+            dir3.position.set(20, 40, 20);
+            scene3.add(dir3);
+            const grid3 = new THREE.GridHelper(120, 24, 0x64748b, 0x334155);
+            scene3.add(grid3);
+            const drone3 = createDroneModel();
+            scene3.add(drone3);
+            state.manualSim.scene = scene3;
+            state.manualSim.camera = camera3;
+            state.manualSim.renderer = renderer3;
+            state.manualSim.droneGroup = drone3;
+            state.manualSim.pos = new THREE.Vector3(0, 0, 0);
+            state.manualSim.yawDeg = 0;
+            state.manualSim.trackEnabled = false;
+            state.manualSim.cameraOffset = new THREE.Vector3(12, 12, 12);
+            state.manualSim.trail = createDirectionalTrailState(scene3);
+            state.manualSim.ready = true;
+            state.manualSim.lastFrameTsMs = null;
+            const resize = () => {
+                const rect = ui.manualSimCanvas.getBoundingClientRect();
+                const w = Math.max(1, Math.floor(rect.width * (window.devicePixelRatio || 1)));
+                const h = Math.max(1, Math.floor(rect.height * (window.devicePixelRatio || 1)));
+                if (ui.manualSimCanvas.width !== w || ui.manualSimCanvas.height !== h) {
+                    ui.manualSimCanvas.width = w;
+                    ui.manualSimCanvas.height = h;
+                }
+                renderer3.setSize(rect.width, rect.height, false);
+                camera3.aspect = rect.width / Math.max(1, rect.height);
+                camera3.updateProjectionMatrix();
+            };
+            resize();
+            if (ui.manualSimFlyBtn) {
+                ui.manualSimFlyBtn.addEventListener("click", () => {
+                    state.manualSim.flyEnabled = !state.manualSim.flyEnabled;
+                    updateManualSimFlyButton();
+                    setManualSimNote(state.manualSim.flyEnabled
+                        ? "Fly mode enabled. Use number keys: 7/9 yaw, 8 front, 4 left, 6 right, 2 back, 5 up, 0 down."
+                        : "Fly mode disabled.");
+                });
+            }
+            if (ui.manualSimResetBtn) {
+                ui.manualSimResetBtn.addEventListener("click", resetManualSimulation);
+            }
+            if (ui.manualSimTrackBtn) {
+                ui.manualSimTrackBtn.addEventListener("click", () => {
+                    state.manualSim.trackEnabled = !state.manualSim.trackEnabled;
+                    ui.manualSimTrackBtn.innerText = state.manualSim.trackEnabled ? "Track: ON" : "Track: OFF";
+                    ui.manualSimTrackBtn.className = state.manualSim.trackEnabled ? "btn-follow active" : "btn-follow";
+                    if (state.manualSim.trackEnabled && state.manualSim.camera && state.manualSim.cameraOffset) {
+                        state.manualSim.camera.position.copy(state.manualSim.droneGroup.position).add(state.manualSim.cameraOffset);
+                        state.manualSim.camera.lookAt(state.manualSim.droneGroup.position);
+                    }
+                });
+            }
+            window.addEventListener("resize", resize);
+            updateManualSimFlyButton();
+            setManualSimNote("Click Fly to enable number-key flight controls.");
         };
         const updateOutputSimulationFromTelemetry = () => {
             if (!state.outputSim.ready || !state.outputSim.pos) return;
@@ -626,6 +1235,15 @@
                 }
             }
             state.outputSim.droneGroup.position.lerp(state.outputSim.pos, 0.35);
+            if (state.outputSim.trail) {
+                const curr = state.outputSim.droneGroup.position.clone();
+                if (!state.outputSim.trail.lastPos) {
+                    state.outputSim.trail.lastPos = curr.clone();
+                } else {
+                    pushTrailSegment(state.outputSim.trail, state.outputSim.trail.lastPos, curr);
+                    state.outputSim.trail.lastPos.copy(curr);
+                }
+            }
             applyDroneAttitude(
                 state.mavlinkAttitude.rollDeg,
                 state.mavlinkAttitude.pitchDeg,
@@ -636,9 +1254,8 @@
                 state.outputSim.camera.position.copy(state.outputSim.droneGroup.position).add(state.outputSim.cameraOffset);
                 state.outputSim.camera.lookAt(state.outputSim.droneGroup.position);
             }
-            setOutputSimNote(
-                `alt=${altSource} | move=${moveSource} | vx=${Number(state.flowRaw.vx).toFixed(3)} vy=${Number(state.flowRaw.vy).toFixed(3)}`
-            );
+            setOutputSimNote(`alt=${altSource} | move=${moveSource} | vx=${Number(state.flowRaw.vx).toFixed(3)} vy=${Number(state.flowRaw.vy).toFixed(3)}`);
+            setEkfComputeText("EKF OF+IMU mode removed.");
         };
         const toDeg = (rad) => (Number(rad) * 180) / Math.PI;
         const toFinite = (...vals) => {
@@ -698,11 +1315,33 @@
             state.mavlinkAttitude.fresh = true;
             const opt = data?.sensors?.optical_flow || {};
             const optOut = data?.outputs?.optical_flow_gps_port?.optical_flow || {};
-            const flowVx = toFinite(opt?.speed_x, opt?.flow_vx, optOut?.speed_x_mps_used, optOut?.speed_x_mps_raw, 0);
-            const flowVy = toFinite(opt?.speed_y, opt?.flow_vy, optOut?.speed_y_mps_used, optOut?.speed_y_mps_raw, 0);
+            const flowVx = toFinite(optOut?.speed_x_mps_raw, opt?.speed_x, opt?.flow_vx, optOut?.speed_x_mps_used, 0);
+            const flowVy = toFinite(optOut?.speed_y_mps_raw, opt?.speed_y, opt?.flow_vy, optOut?.speed_y_mps_used, 0);
+            const flowRateX = toFinite(opt?.flow_vx, optOut?.flow_vx);
+            const flowRateY = toFinite(opt?.flow_vy, optOut?.flow_vy);
+            const flowQuality = toFinite(opt?.flow_q, opt?.flow_quality, optOut?.flow_quality);
+            const flowOk = toFinite(opt?.flow_ok, opt?.flow_status, optOut?.flow_ok);
             state.flowRaw.vx = Number.isFinite(flowVx) ? flowVx : 0;
             state.flowRaw.vy = Number.isFinite(flowVy) ? flowVy : 0;
+            state.flowRaw.rateX = Number.isFinite(flowRateX) ? flowRateX : state.flowRaw.rateX;
+            state.flowRaw.rateY = Number.isFinite(flowRateY) ? flowRateY : state.flowRaw.rateY;
+            state.flowRaw.quality = Number.isFinite(flowQuality) ? flowQuality : state.flowRaw.quality;
+            state.flowRaw.flowOk = Number.isFinite(flowOk) ? flowOk : state.flowRaw.flowOk;
             state.flowRaw.fresh = true;
+            const imu = data?.sensors?.imu || {};
+            const imuAx = toFinite(imu?.ax);
+            const imuAy = toFinite(imu?.ay);
+            const imuAz = toFinite(imu?.az);
+            const imuGx = toFinite(imu?.gx);
+            const imuGy = toFinite(imu?.gy);
+            const imuGz = toFinite(imu?.gz);
+            state.imuRaw.ax = Number.isFinite(imuAx) ? imuAx : state.imuRaw.ax;
+            state.imuRaw.ay = Number.isFinite(imuAy) ? imuAy : state.imuRaw.ay;
+            state.imuRaw.az = Number.isFinite(imuAz) ? imuAz : state.imuRaw.az;
+            state.imuRaw.gx = Number.isFinite(imuGx) ? imuGx : state.imuRaw.gx;
+            state.imuRaw.gy = Number.isFinite(imuGy) ? imuGy : state.imuRaw.gy;
+            state.imuRaw.gz = Number.isFinite(imuGz) ? imuGz : state.imuRaw.gz;
+            state.imuRaw.fresh = Number.isFinite(imuAx) && Number.isFinite(imuAy) && Number.isFinite(imuAz);
             const lidarAgl = toFinite(
                 opt?.height_m,
                 opt?.dist_mm != null ? Number(opt.dist_mm) / 1000 : null,
@@ -853,6 +1492,7 @@
                     state.attitudeInput.yawDeg
                 );
             }
+            updateManualSimulation();
         }
 
         // Loop
@@ -862,6 +1502,9 @@
             renderer.render(scene, camera);
             if (state.outputSim.ready && state.outputSim.renderer && state.outputSim.scene && state.outputSim.camera) {
                 state.outputSim.renderer.render(state.outputSim.scene, state.outputSim.camera);
+            }
+            if (state.manualSim.ready && state.manualSim.renderer && state.manualSim.scene && state.manualSim.camera) {
+                state.manualSim.renderer.render(state.manualSim.scene, state.manualSim.camera);
             }
         }
 
@@ -878,6 +1521,8 @@
         });
 
         initOutputSimulation();
+        initManualSimulation();
+        initManualInputHandlers();
         updateModeInfo();
         pollPixhawkAttitude();
         state.mavlinkPollTimer = window.setInterval(pollPixhawkAttitude, 150);
