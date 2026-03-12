@@ -227,6 +227,31 @@
             white-space: pre-wrap;
             font-family: 'Consolas', 'Courier New', monospace;
         }
+        .manual-of-panel {
+            background: #020617;
+            border: 1px solid #1e293b;
+            border-radius: 6px;
+            padding: 6px;
+            display: grid;
+            gap: 6px;
+        }
+        .manual-of-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+        .manual-of-box {
+            background: #000;
+            border: 1px solid #1f2937;
+            border-radius: 6px;
+            padding: 8px;
+            color: #c7d2fe;
+            font-size: 10px;
+            line-height: 1.35;
+            font-family: 'Consolas', 'Courier New', monospace;
+            white-space: pre-wrap;
+            min-height: 70px;
+        }
 
         /* VIEWPORT CONTAINER */
         #viewport { 
@@ -283,9 +308,9 @@
             <div class="sec-title">1. Configuration</div>
             <label>Communication Protocol</label>
             <select id="mode-select" onchange="updateModeInfo()">
-                <option value="GPS_INPUT">MAVLink: GPS_INPUT (Software Bridge)</option>
-                <option value="ODOM">ROS: ODOMETRY (Visual SLAM)</option>
-                <option value="UBX">u-blox: NAV-PVT (Hardware Serial)</option>
+                <option value="GPS_INPUT">MAVLink: GPS_INPUT (Software Bridge, ENU)</option>
+                <option value="ODOM">ROS: ODOMETRY (Visual SLAM, NED)</option>
+                <option value="UBX">u-blox: NAV-PVT (Hardware Serial, ENU local)</option>
             </select>
             
             <div id="mode-desc" style="font-size:10px; color:#64748b; margin-top:5px; font-style:italic;">
@@ -331,8 +356,8 @@
                     <div>
                         <label>Movement Source</label>
                         <select id="output-sim-move-source">
-                            <option value="optical_vxy">Optical Flow vx/vy</option>
-                            <option value="hold">Hold Position</option>
+                            <option value="optical_vxy">Optical Flow vx/vy (ENU local)</option>
+                            <option value="hold">Hold Position (Frame N/A)</option>
                         </select>
                     </div>
                     <button class="btn-home" type="button" id="output-sim-reset-btn">Reset</button>
@@ -369,6 +394,21 @@
                     <span class="trail-item"><span class="trail-swatch" style="background:#3b82f6;"></span> +y direction</span>
                     <span class="trail-item"><span class="trail-swatch" style="background:#facc15;"></span> -y direction</span>
                 </div>
+                <div class="output-sim-note">Manual simulator frame: ENU local (x east, y up, z north in sim mapping).</div>
+                <div class="manual-of-panel">
+                    <div class="sec-title" style="margin-bottom:0;">7. Manual Optical Flow Display</div>
+                    <div class="manual-of-grid">
+                        <div class="manual-of-box" id="manual-of-global">Global (from OF+yaw)
+x=0.000
+y=0.000</div>
+                        <div class="manual-of-box" id="manual-of-relative">Relative delta
+dx=0.000
+dy=0.000</div>
+                    </div>
+                    <div class="manual-of-box" id="manual-of-detail">Body frame (sensor)
+fwd=0.000 right=0.000
+yaw=0.0 deg</div>
+                </div>
             </div>
         </div>
     </div>
@@ -381,6 +421,7 @@
             <div><span style="color:#ff0000">■</span> Acceleration Vector</div>
             <div><span style="color:#ffff00">■</span> Flight Trail</div>
             <div style="margin-top:5px; color:#aaa; font-size:10px;">(Left Click: Rotate | Right Click: Pan | Scroll: Zoom)</div>
+            <div id="frame-readout">Frame: ENU/NED pending...</div>
             <div id="distance-readout">Dist: 0m</div>
         </div>
         
@@ -515,6 +556,16 @@
                     throttleDown: false,
                 },
             },
+            manualOf: {
+                lastX: null,
+                lastZ: null,
+                globalX: 0,
+                globalY: 0,
+                deltaX: 0,
+                deltaY: 0,
+                bodyFwd: 0,
+                bodyRight: 0,
+            },
             mavlinkPollTimer: null
         };
 
@@ -541,6 +592,10 @@
             manualSimResetBtn: document.getElementById('manual-sim-reset-btn'),
             manualSimTrackBtn: document.getElementById('manual-sim-track-btn'),
             manualSimNote: document.getElementById('manual-sim-note'),
+            manualOfGlobal: document.getElementById('manual-of-global'),
+            manualOfRelative: document.getElementById('manual-of-relative'),
+            manualOfDetail: document.getElementById('manual-of-detail'),
+            frameReadout: document.getElementById('frame-readout'),
         };
         const dataUrl = (window.location.protocol === "file:")
             ? "http://127.0.0.1:8765/data"
@@ -612,9 +667,9 @@
         window.updateModeInfo = function() {
             const m = ui.mode.value;
             let txt = "";
-            if (m === "GPS_INPUT") txt = "MAVLink Software Bridge. Expects Float Lat/Lon, Float Alt, Float Velocity.";
-            if (m === "ODOM") txt = "ROS / Visual SLAM. Expects Local Position (Meters) & Quaternions.";
-            if (m === "UBX") txt = "Hardware Serial Protocol. Expects Integers (Deg*1e7) and Millimeters.";
+            if (m === "GPS_INPUT") txt = "MAVLink Software Bridge (Frame: ENU local). Expects Float Lat/Lon, Float Alt, Float Velocity.";
+            if (m === "ODOM") txt = "ROS / Visual SLAM (Frame: NED). Expects Local Position (Meters) & Quaternions.";
+            if (m === "UBX") txt = "Hardware Serial Protocol (Frame: ENU local). Expects Integers (Deg*1e7) and Millimeters.";
             ui.desc.innerText = txt;
         }
         window.goBackToMain = function() {
@@ -643,6 +698,29 @@
         };
         const setManualSimNote = (text) => {
             if (ui.manualSimNote) ui.manualSimNote.innerText = text;
+        };
+        const setFrameReadout = (text) => {
+            if (ui.frameReadout) ui.frameReadout.innerText = text;
+        };
+        const setManualOfDisplay = () => {
+            if (ui.manualOfGlobal) {
+                ui.manualOfGlobal.innerText =
+                    `Global (from OF+yaw)\n`
+                    + `x=${state.manualOf.globalX.toFixed(3)}\n`
+                    + `y=${state.manualOf.globalY.toFixed(3)}`;
+            }
+            if (ui.manualOfRelative) {
+                ui.manualOfRelative.innerText =
+                    `Relative delta\n`
+                    + `dx=${state.manualOf.deltaX.toFixed(3)}\n`
+                    + `dy=${state.manualOf.deltaY.toFixed(3)}`;
+            }
+            if (ui.manualOfDetail) {
+                ui.manualOfDetail.innerText =
+                    `Body frame (sensor)\n`
+                    + `fwd=${state.manualOf.bodyFwd.toFixed(3)} right=${state.manualOf.bodyRight.toFixed(3)}\n`
+                    + `yaw=${state.manualSim.yawDeg.toFixed(1)} deg`;
+            }
         };
         const createDirectionalTrailState = (sceneRef) => {
             const colors = {
@@ -928,6 +1006,15 @@
             state.manualSim.lastFrameTsMs = null;
             state.manualSim.droneGroup.position.set(0, 0, 0);
             clearDirectionalTrail(state.manualSim.trail);
+            state.manualOf.lastX = 0;
+            state.manualOf.lastZ = 0;
+            state.manualOf.globalX = 0;
+            state.manualOf.globalY = 0;
+            state.manualOf.deltaX = 0;
+            state.manualOf.deltaY = 0;
+            state.manualOf.bodyFwd = 0;
+            state.manualOf.bodyRight = 0;
+            setManualOfDisplay();
             applyDroneAttitude(0, 0, state.manualSim.yawDeg, state.manualSim.droneGroup);
             if (state.manualSim.trackEnabled && state.manualSim.camera && state.manualSim.cameraOffset) {
                 state.manualSim.camera.position.copy(state.manualSim.droneGroup.position).add(state.manualSim.cameraOffset);
@@ -1020,6 +1107,33 @@
             }
             state.manualSim.droneGroup.position.lerp(state.manualSim.pos, 0.45);
             applyDroneAttitude(0, 0, state.manualSim.yawDeg, state.manualSim.droneGroup);
+
+            const currX = state.manualSim.pos.x;
+            const currZ = state.manualSim.pos.z;
+            if (!Number.isFinite(state.manualOf.lastX) || !Number.isFinite(state.manualOf.lastZ)) {
+                state.manualOf.lastX = currX;
+                state.manualOf.lastZ = currZ;
+            }
+            const dX = currX - state.manualOf.lastX;
+            const dZ = currZ - state.manualOf.lastZ;
+            state.manualOf.lastX = currX;
+            state.manualOf.lastZ = currZ;
+            const yawRad = THREE.MathUtils.degToRad(state.manualSim.yawDeg);
+            const sinY = Math.sin(yawRad);
+            const cosY = Math.cos(yawRad);
+            // Simulated OF sensor body-frame delta (depends on current yaw).
+            const bodyFwd = dX * sinY + dZ * cosY;
+            const bodyRight = dX * cosY - dZ * sinY;
+            state.manualOf.bodyFwd = bodyFwd;
+            state.manualOf.bodyRight = bodyRight;
+            // Reconstruct global delta from body-frame OF + yaw.
+            const globalDx = bodyFwd * sinY + bodyRight * cosY;
+            const globalDy = bodyFwd * cosY - bodyRight * sinY;
+            state.manualOf.deltaX = globalDx;
+            state.manualOf.deltaY = globalDy;
+            state.manualOf.globalX += globalDx;
+            state.manualOf.globalY += globalDy;
+            setManualOfDisplay();
             if (state.manualSim.trail) {
                 const curr = state.manualSim.droneGroup.position.clone();
                 if (!state.manualSim.trail.lastPos) {
@@ -1116,15 +1230,15 @@
                     state.outputSim.ekf = createOutputEkfState();
                     const mode = ui.outputSimMoveSource.value;
                     if (mode === "optical_vxy") {
-                        setOutputSimNote("Optical flow direct mode active (raw vx/vy integration).");
+                        setOutputSimNote("Optical flow direct mode active (raw vx/vy integration, frame: ENU local).");
                     } else {
-                        setOutputSimNote("Hold position mode active.");
+                        setOutputSimNote("Hold position mode active (frame: N/A).");
                     }
                     setEkfComputeText("EKF OF+IMU mode removed.");
                 });
             }
             window.addEventListener("resize", resize);
-            setOutputSimNote("Optical flow direct mode active (raw vx/vy integration).");
+            setOutputSimNote("Optical flow direct mode active (raw vx/vy integration, frame: ENU local).");
             setEkfComputeText("EKF OF+IMU mode removed.");
         };
         const initManualSimulation = () => {
@@ -1160,6 +1274,14 @@
             state.manualSim.trail = createDirectionalTrailState(scene3);
             state.manualSim.ready = true;
             state.manualSim.lastFrameTsMs = null;
+            state.manualOf.lastX = 0;
+            state.manualOf.lastZ = 0;
+            state.manualOf.globalX = 0;
+            state.manualOf.globalY = 0;
+            state.manualOf.deltaX = 0;
+            state.manualOf.deltaY = 0;
+            state.manualOf.bodyFwd = 0;
+            state.manualOf.bodyRight = 0;
             const resize = () => {
                 const rect = ui.manualSimCanvas.getBoundingClientRect();
                 const w = Math.max(1, Math.floor(rect.width * (window.devicePixelRatio || 1)));
@@ -1199,6 +1321,7 @@
             window.addEventListener("resize", resize);
             updateManualSimFlyButton();
             setManualSimNote("Click Fly to enable number-key flight controls.");
+            setManualOfDisplay();
         };
         const updateOutputSimulationFromTelemetry = () => {
             if (!state.outputSim.ready || !state.outputSim.pos) return;
@@ -1254,7 +1377,8 @@
                 state.outputSim.camera.position.copy(state.outputSim.droneGroup.position).add(state.outputSim.cameraOffset);
                 state.outputSim.camera.lookAt(state.outputSim.droneGroup.position);
             }
-            setOutputSimNote(`alt=${altSource} | move=${moveSource} | vx=${Number(state.flowRaw.vx).toFixed(3)} vy=${Number(state.flowRaw.vy).toFixed(3)}`);
+            const moveFrame = moveSource === "optical_vxy" ? "ENU" : "N/A";
+            setOutputSimNote(`alt=${altSource} | move=${moveSource} | frame=${moveFrame} | vx=${Number(state.flowRaw.vx).toFixed(3)} vy=${Number(state.flowRaw.vy).toFixed(3)}`);
             setEkfComputeText("EKF OF+IMU mode removed.");
         };
         const toDeg = (rad) => (Number(rad) * 180) / Math.PI;
@@ -1361,6 +1485,12 @@
                 if (!state.positionOrigin) {
                     state.positionOrigin = { x: pos.x, y: pos.y, z: pos.z };
                 }
+                let frameText = "Frame: ENU local";
+                if (pos.source === "odom_ned") frameText = "Frame: NED (mapped to view)";
+                if (pos.source === "fused" || pos.source === "camera" || pos.source === "gps_local") {
+                    frameText = "Frame: ENU local (mapped to view)";
+                }
+                setFrameReadout(frameText);
             } else if (Number.isFinite(state.mavlinkAttitude.altAsmlM)) {
                 // Fallback: at least show vertical movement from baro altitude.
                 state.positionRaw.y = state.mavlinkAttitude.altAsmlM;
@@ -1369,6 +1499,7 @@
                 if (!state.positionOrigin) {
                     state.positionOrigin = { x: 0, y: state.positionRaw.y, z: 0 };
                 }
+                setFrameReadout("Frame: altitude-only (N/A)");
             }
 
             state.attitudeInput.rollDeg = rollDeg;
