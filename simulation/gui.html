@@ -1440,7 +1440,7 @@
       };
       const OP_LAT_GAIN = 1.0;
       const OP_LAT_EMA_ALPHA = 0.2;
-      const OP_LAT_DEADBAND = 0.0;
+      const OP_LAT_DEADBAND = 0.01;
 
       const filterSignal = (prev, raw, alpha = 0.2, deadband = 0.0, maxStep = 1e9) => {
         let value = Number.isFinite(raw) ? raw : prev;
@@ -2711,8 +2711,8 @@
       const drawVelPlot = () => {
         const rect = resizeCanvas(velPlot, velCtx);
         if (!rect) return;
-        const vx = smoothSeries(plotState.vx, 11);
-        const vy = smoothSeries(plotState.vy, 11);
+        const vx = smoothSeries(plotState.vx, 7);
+        const vy = smoothSeries(plotState.vy, 7);
         const [minVal, maxVal] = autoRange([vx, vy], { minSpan: 0.02, padRatio: 0.12 });
         drawAxes(velCtx, rect, 28);
         drawYScaleLabels(velCtx, rect, 28, 28, 28, 28, minVal, maxVal, 3, " m/s");
@@ -3974,30 +3974,14 @@
           });
           setText("rt-vx", vx, 3);
           setText("rt-vy", vy, 3);
-          const opticalBodyVx = asFiniteNumber(
-            opt?.speed_x,
-            opt?.flow_vx,
-            opt?.flow_vx_mps,
-            0
-          ) || 0;
-          const opticalBodyVy = asFiniteNumber(
-            opt?.speed_y,
-            opt?.flow_vy,
-            opt?.flow_vy_mps,
-            0
-          ) || 0;
-          const flowHeadingDeg = asFiniteNumber(
-            ofHeadingSourceState.value === "vo"
-              ? plotState.voHeadingDeg
-              : (ofHeadingSourceState.value === "pixhawk" ? plotState.pixhawkHeadingDeg : realCompassHeading),
-            realCompassHeading,
-            plotState.pixhawkHeadingDeg,
-            plotState.voHeadingDeg
-          );
+          // Keep integration input identical to the displayed velocity stream.
+          // This avoids drift from mixing raw flow-rate channels with filtered world m/s channels.
+          const opticalBodyVx = vx;
+          const opticalBodyVy = vy;
           const opLatIntegrated = integrateOpticalLikeOpLat(
             opticalBodyVx,
             opticalBodyVy,
-            flowHeadingDeg,
+            null,
             nowMs
           );
           let posX = opLatIntegrated.x;
@@ -4165,7 +4149,8 @@
       };
 
       const openOpticalBigView = () => {
-        const url = "/oplat_big_view.html";
+        const src = encodeURIComponent(ofHeadingSourceState.value || "real");
+        const url = `/oplat_big_view.html?heading_source=${src}`;
         const w = window.open(url, "_blank", "noopener,noreferrer");
         if (!w) {
           window.location.href = url;

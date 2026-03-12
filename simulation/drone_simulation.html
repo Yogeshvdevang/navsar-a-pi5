@@ -170,6 +170,14 @@
             border-radius: 6px;
             background: #0f172a;
         }
+        #of-yaw-sim-canvas {
+            width: 100%;
+            height: 180px;
+            display: block;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            background: #0f172a;
+        }
         .output-sim-note {
             font-size: 10px;
             color: #94a3b8;
@@ -410,6 +418,37 @@ fwd=0.000 right=0.000
 yaw=0.0 deg</div>
                 </div>
             </div>
+            <div class="output-sim-panel">
+                <div class="sec-title" style="margin-bottom:0;">8. OF Sensor + Pixhawk Yaw Global Simulator</div>
+                <div class="manual-sim-grid">
+                    <button class="btn-home" type="button" id="of-yaw-sim-reset-btn">Reset</button>
+                    <button class="btn-follow" type="button" id="of-yaw-sim-track-btn">Track: OFF</button>
+                    <div class="manual-sim-controls" style="grid-column: span 2;">
+                        Source: optical flow vx/vy + Pixhawk yaw. Display: global motion in ENU local frame.
+                    </div>
+                </div>
+                <canvas id="of-yaw-sim-canvas"></canvas>
+                <div class="output-sim-note" id="of-yaw-sim-note">Waiting for optical flow + yaw stream...</div>
+                <div class="trail-legend" aria-label="OF yaw trail color legend">
+                    <span class="trail-item"><span class="trail-swatch" style="background:#ffffff;"></span> +x direction</span>
+                    <span class="trail-item"><span class="trail-swatch" style="background:#22c55e;"></span> -x direction</span>
+                    <span class="trail-item"><span class="trail-swatch" style="background:#3b82f6;"></span> +y direction</span>
+                    <span class="trail-item"><span class="trail-swatch" style="background:#facc15;"></span> -y direction</span>
+                </div>
+                <div class="manual-of-panel">
+                    <div class="manual-of-grid">
+                        <div class="manual-of-box" id="of-yaw-global">Global frame (ENU)
+x=0.000
+y=0.000</div>
+                        <div class="manual-of-box" id="of-yaw-relative">Relative change
+dx=0.000
+dy=0.000</div>
+                    </div>
+                    <div class="manual-of-box" id="of-yaw-detail">Inputs
+vx_body=0.000 vy_body=0.000
+yaw=0.0 deg dt=0.000</div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -566,6 +605,26 @@ yaw=0.0 deg</div>
                 bodyFwd: 0,
                 bodyRight: 0,
             },
+            ofYawSim: {
+                scene: null,
+                camera: null,
+                renderer: null,
+                droneGroup: null,
+                pos: null,
+                trackEnabled: false,
+                cameraOffset: null,
+                trail: null,
+                ready: false,
+                lastTsMs: null,
+                globalX: 0,
+                globalY: 0,
+                deltaX: 0,
+                deltaY: 0,
+                bodyVx: 0,
+                bodyVy: 0,
+                yawDeg: 0,
+                lastDt: 0,
+            },
             mavlinkPollTimer: null
         };
 
@@ -595,6 +654,13 @@ yaw=0.0 deg</div>
             manualOfGlobal: document.getElementById('manual-of-global'),
             manualOfRelative: document.getElementById('manual-of-relative'),
             manualOfDetail: document.getElementById('manual-of-detail'),
+            ofYawSimCanvas: document.getElementById('of-yaw-sim-canvas'),
+            ofYawSimResetBtn: document.getElementById('of-yaw-sim-reset-btn'),
+            ofYawSimTrackBtn: document.getElementById('of-yaw-sim-track-btn'),
+            ofYawSimNote: document.getElementById('of-yaw-sim-note'),
+            ofYawGlobal: document.getElementById('of-yaw-global'),
+            ofYawRelative: document.getElementById('of-yaw-relative'),
+            ofYawDetail: document.getElementById('of-yaw-detail'),
             frameReadout: document.getElementById('frame-readout'),
         };
         const dataUrl = (window.location.protocol === "file:")
@@ -699,6 +765,9 @@ yaw=0.0 deg</div>
         const setManualSimNote = (text) => {
             if (ui.manualSimNote) ui.manualSimNote.innerText = text;
         };
+        const setOfYawSimNote = (text) => {
+            if (ui.ofYawSimNote) ui.ofYawSimNote.innerText = text;
+        };
         const setFrameReadout = (text) => {
             if (ui.frameReadout) ui.frameReadout.innerText = text;
         };
@@ -720,6 +789,26 @@ yaw=0.0 deg</div>
                     `Body frame (sensor)\n`
                     + `fwd=${state.manualOf.bodyFwd.toFixed(3)} right=${state.manualOf.bodyRight.toFixed(3)}\n`
                     + `yaw=${state.manualSim.yawDeg.toFixed(1)} deg`;
+            }
+        };
+        const setOfYawDisplay = () => {
+            if (ui.ofYawGlobal) {
+                ui.ofYawGlobal.innerText =
+                    `Global frame (ENU)\n`
+                    + `x=${state.ofYawSim.globalX.toFixed(3)}\n`
+                    + `y=${state.ofYawSim.globalY.toFixed(3)}`;
+            }
+            if (ui.ofYawRelative) {
+                ui.ofYawRelative.innerText =
+                    `Relative change\n`
+                    + `dx=${state.ofYawSim.deltaX.toFixed(3)}\n`
+                    + `dy=${state.ofYawSim.deltaY.toFixed(3)}`;
+            }
+            if (ui.ofYawDetail) {
+                ui.ofYawDetail.innerText =
+                    `Inputs\n`
+                    + `vx_body=${state.ofYawSim.bodyVx.toFixed(3)} vy_body=${state.ofYawSim.bodyVy.toFixed(3)}\n`
+                    + `yaw=${state.ofYawSim.yawDeg.toFixed(1)} deg dt=${state.ofYawSim.lastDt.toFixed(3)}`;
             }
         };
         const createDirectionalTrailState = (sceneRef) => {
@@ -1022,6 +1111,28 @@ yaw=0.0 deg</div>
             }
             setManualSimNote("Manual sim reset. Click Fly to enable number-key flight controls.");
         };
+        const resetOfYawSimulation = () => {
+            if (!state.ofYawSim.ready) return;
+            state.ofYawSim.pos.set(0, 0, 0);
+            state.ofYawSim.globalX = 0;
+            state.ofYawSim.globalY = 0;
+            state.ofYawSim.deltaX = 0;
+            state.ofYawSim.deltaY = 0;
+            state.ofYawSim.bodyVx = 0;
+            state.ofYawSim.bodyVy = 0;
+            state.ofYawSim.yawDeg = 0;
+            state.ofYawSim.lastDt = 0;
+            state.ofYawSim.lastTsMs = null;
+            state.ofYawSim.droneGroup.position.set(0, 0, 0);
+            clearDirectionalTrail(state.ofYawSim.trail);
+            applyDroneAttitude(0, 0, 0, state.ofYawSim.droneGroup);
+            if (state.ofYawSim.trackEnabled && state.ofYawSim.camera && state.ofYawSim.cameraOffset) {
+                state.ofYawSim.camera.position.copy(state.ofYawSim.droneGroup.position).add(state.ofYawSim.cameraOffset);
+                state.ofYawSim.camera.lookAt(state.ofYawSim.droneGroup.position);
+            }
+            setOfYawDisplay();
+            setOfYawSimNote("OF+yaw simulator reset.");
+        };
         const updateManualSimFlyButton = () => {
             if (!ui.manualSimFlyBtn) return;
             ui.manualSimFlyBtn.innerText = state.manualSim.flyEnabled ? "Fly: ON" : "Fly: OFF";
@@ -1158,6 +1269,57 @@ yaw=0.0 deg</div>
             if (state.manualSim.keyState.throttleDown) activeKeys.push("0");
             setManualSimNote(
                 `fly=${state.manualSim.flyEnabled ? "on" : "off"} | x=${state.manualSim.pos.x.toFixed(2)} y=${state.manualSim.pos.y.toFixed(2)} z=${state.manualSim.pos.z.toFixed(2)} yaw=${state.manualSim.yawDeg.toFixed(1)} | keys=${activeKeys.length ? activeKeys.join(",") : "none"}`
+            );
+        };
+        const updateOfYawSimulationFromTelemetry = () => {
+            if (!state.ofYawSim.ready || !state.ofYawSim.pos) return;
+            const ts = Number(state.telemetryTsMs);
+            if (!Number.isFinite(ts)) return;
+            if (!Number.isFinite(state.ofYawSim.lastTsMs)) {
+                state.ofYawSim.lastTsMs = ts;
+                return;
+            }
+            const dt = Math.max(0.001, Math.min(0.2, (ts - state.ofYawSim.lastTsMs) / 1000.0));
+            state.ofYawSim.lastTsMs = ts;
+            const vxBody = Number(state.flowRaw.vx);
+            const vyBody = Number(state.flowRaw.vy);
+            const yawDeg = Number(state.mavlinkAttitude.yawDeg) || 0;
+            const yawRad = THREE.MathUtils.degToRad(yawDeg);
+            const sinY = Math.sin(yawRad);
+            const cosY = Math.cos(yawRad);
+            // Body OF velocity (forward/right) -> ENU global velocity (east/north).
+            const vEast = (Number.isFinite(vxBody) ? vxBody : 0) * sinY + (Number.isFinite(vyBody) ? vyBody : 0) * cosY;
+            const vNorth = (Number.isFinite(vxBody) ? vxBody : 0) * cosY - (Number.isFinite(vyBody) ? vyBody : 0) * sinY;
+            const dx = vEast * dt;
+            const dy = vNorth * dt;
+            state.ofYawSim.deltaX = dx;
+            state.ofYawSim.deltaY = dy;
+            state.ofYawSim.globalX += dx;
+            state.ofYawSim.globalY += dy;
+            state.ofYawSim.bodyVx = Number.isFinite(vxBody) ? vxBody : 0;
+            state.ofYawSim.bodyVy = Number.isFinite(vyBody) ? vyBody : 0;
+            state.ofYawSim.yawDeg = yawDeg;
+            state.ofYawSim.lastDt = dt;
+            state.ofYawSim.pos.x = state.ofYawSim.globalX;
+            state.ofYawSim.pos.z = state.ofYawSim.globalY;
+            state.ofYawSim.droneGroup.position.lerp(state.ofYawSim.pos, 0.35);
+            applyDroneAttitude(0, 0, yawDeg, state.ofYawSim.droneGroup);
+            if (state.ofYawSim.trail) {
+                const curr = state.ofYawSim.droneGroup.position.clone();
+                if (!state.ofYawSim.trail.lastPos) {
+                    state.ofYawSim.trail.lastPos = curr.clone();
+                } else {
+                    pushTrailSegment(state.ofYawSim.trail, state.ofYawSim.trail.lastPos, curr);
+                    state.ofYawSim.trail.lastPos.copy(curr);
+                }
+            }
+            if (state.ofYawSim.trackEnabled && state.ofYawSim.camera && state.ofYawSim.cameraOffset) {
+                state.ofYawSim.camera.position.copy(state.ofYawSim.droneGroup.position).add(state.ofYawSim.cameraOffset);
+                state.ofYawSim.camera.lookAt(state.ofYawSim.droneGroup.position);
+            }
+            setOfYawDisplay();
+            setOfYawSimNote(
+                `frame=ENU | x=${state.ofYawSim.globalX.toFixed(2)} y=${state.ofYawSim.globalY.toFixed(2)} | dx=${dx.toFixed(3)} dy=${dy.toFixed(3)} | yaw=${yawDeg.toFixed(1)}`
             );
         };
         const initOutputSimulation = () => {
@@ -1322,6 +1484,77 @@ yaw=0.0 deg</div>
             updateManualSimFlyButton();
             setManualSimNote("Click Fly to enable number-key flight controls.");
             setManualOfDisplay();
+        };
+        const initOfYawSimulation = () => {
+            if (isEmbed || !ui.ofYawSimCanvas) return;
+            const scene4 = new THREE.Scene();
+            scene4.background = new THREE.Color(0x0f172a);
+            scene4.fog = new THREE.Fog(0x0f172a, 80, 240);
+            const camera4 = new THREE.PerspectiveCamera(38, 1, 0.1, 2000);
+            camera4.position.set(12, 12, 12);
+            camera4.lookAt(0, 0, 0);
+            const renderer4 = new THREE.WebGLRenderer({
+                canvas: ui.ofYawSimCanvas,
+                antialias: true,
+            });
+            renderer4.setPixelRatio(window.devicePixelRatio || 1);
+            const ambient4 = new THREE.AmbientLight(0xffffff, 0.7);
+            scene4.add(ambient4);
+            const dir4 = new THREE.DirectionalLight(0xffffff, 0.9);
+            dir4.position.set(20, 40, 20);
+            scene4.add(dir4);
+            const grid4 = new THREE.GridHelper(120, 24, 0x64748b, 0x334155);
+            scene4.add(grid4);
+            const drone4 = createDroneModel();
+            scene4.add(drone4);
+            state.ofYawSim.scene = scene4;
+            state.ofYawSim.camera = camera4;
+            state.ofYawSim.renderer = renderer4;
+            state.ofYawSim.droneGroup = drone4;
+            state.ofYawSim.pos = new THREE.Vector3(0, 0, 0);
+            state.ofYawSim.trackEnabled = false;
+            state.ofYawSim.cameraOffset = new THREE.Vector3(12, 12, 12);
+            state.ofYawSim.trail = createDirectionalTrailState(scene4);
+            state.ofYawSim.ready = true;
+            state.ofYawSim.lastTsMs = null;
+            state.ofYawSim.globalX = 0;
+            state.ofYawSim.globalY = 0;
+            state.ofYawSim.deltaX = 0;
+            state.ofYawSim.deltaY = 0;
+            state.ofYawSim.bodyVx = 0;
+            state.ofYawSim.bodyVy = 0;
+            state.ofYawSim.yawDeg = 0;
+            state.ofYawSim.lastDt = 0;
+            const resize = () => {
+                const rect = ui.ofYawSimCanvas.getBoundingClientRect();
+                const w = Math.max(1, Math.floor(rect.width * (window.devicePixelRatio || 1)));
+                const h = Math.max(1, Math.floor(rect.height * (window.devicePixelRatio || 1)));
+                if (ui.ofYawSimCanvas.width !== w || ui.ofYawSimCanvas.height !== h) {
+                    ui.ofYawSimCanvas.width = w;
+                    ui.ofYawSimCanvas.height = h;
+                }
+                renderer4.setSize(rect.width, rect.height, false);
+                camera4.aspect = rect.width / Math.max(1, rect.height);
+                camera4.updateProjectionMatrix();
+            };
+            resize();
+            if (ui.ofYawSimResetBtn) {
+                ui.ofYawSimResetBtn.addEventListener("click", resetOfYawSimulation);
+            }
+            if (ui.ofYawSimTrackBtn) {
+                ui.ofYawSimTrackBtn.addEventListener("click", () => {
+                    state.ofYawSim.trackEnabled = !state.ofYawSim.trackEnabled;
+                    ui.ofYawSimTrackBtn.innerText = state.ofYawSim.trackEnabled ? "Track: ON" : "Track: OFF";
+                    ui.ofYawSimTrackBtn.className = state.ofYawSim.trackEnabled ? "btn-follow active" : "btn-follow";
+                    if (state.ofYawSim.trackEnabled && state.ofYawSim.camera && state.ofYawSim.cameraOffset) {
+                        state.ofYawSim.camera.position.copy(state.ofYawSim.droneGroup.position).add(state.ofYawSim.cameraOffset);
+                        state.ofYawSim.camera.lookAt(state.ofYawSim.droneGroup.position);
+                    }
+                });
+            }
+            window.addEventListener("resize", resize);
+            setOfYawDisplay();
+            setOfYawSimNote("Waiting for optical flow + yaw stream...");
         };
         const updateOutputSimulationFromTelemetry = () => {
             if (!state.outputSim.ready || !state.outputSim.pos) return;
@@ -1536,6 +1769,7 @@ yaw=0.0 deg</div>
                 const ok = updateFromPixhawkMavlink(data);
                 if (ok) {
                     updateOutputSimulationFromTelemetry();
+                    updateOfYawSimulationFromTelemetry();
                     if (ui.stream) {
                         const altTxt = Number.isFinite(state.mavlinkAttitude.altAsmlM)
                             ? state.mavlinkAttitude.altAsmlM.toFixed(3)
@@ -1637,6 +1871,9 @@ yaw=0.0 deg</div>
             if (state.manualSim.ready && state.manualSim.renderer && state.manualSim.scene && state.manualSim.camera) {
                 state.manualSim.renderer.render(state.manualSim.scene, state.manualSim.camera);
             }
+            if (state.ofYawSim.ready && state.ofYawSim.renderer && state.ofYawSim.scene && state.ofYawSim.camera) {
+                state.ofYawSim.renderer.render(state.ofYawSim.scene, state.ofYawSim.camera);
+            }
         }
 
         window.addEventListener('resize', () => {
@@ -1653,6 +1890,7 @@ yaw=0.0 deg</div>
 
         initOutputSimulation();
         initManualSimulation();
+        initOfYawSimulation();
         initManualInputHandlers();
         updateModeInfo();
         pollPixhawkAttitude();
