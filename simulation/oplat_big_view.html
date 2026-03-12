@@ -167,6 +167,7 @@
 
     <script>
       const STORAGE_KEY = "navisar_op_lat_tuning_v1";
+      const DEFAULT_STORAGE_KEY = "navisar_op_lat_default_tuning_v1";
       const DEFAULTS = {
         swapXY: false,
         invertX: false,
@@ -358,6 +359,22 @@
           return { ...DEFAULTS };
         }
       };
+      const loadDefaultTuning = () => {
+        try {
+          const raw = localStorage.getItem(DEFAULT_STORAGE_KEY);
+          return raw ? norm(JSON.parse(raw)) : { ...DEFAULTS };
+        } catch (_) {
+          return { ...DEFAULTS };
+        }
+      };
+      const saveDefaultTuning = (tuning) => {
+        try {
+          localStorage.setItem(DEFAULT_STORAGE_KEY, JSON.stringify(norm(tuning)));
+        } catch (_) {
+          // ignore
+        }
+      };
+      let defaultTuning = loadDefaultTuning();
 
       function applyTuningToUi() {
         const t = state.tuning;
@@ -705,6 +722,8 @@
       document.getElementById("save-btn").addEventListener("click", () => {
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(norm(state.tuning)));
+          defaultTuning = norm(state.tuning);
+          saveDefaultTuning(defaultTuning);
           statusEl.textContent = "Tuning saved.";
         } catch (_) {
           statusEl.textContent = "Save failed.";
@@ -712,11 +731,11 @@
       });
 
       document.getElementById("default-btn").addEventListener("click", () => {
-        state.tuning = { ...DEFAULTS };
+        state.tuning = { ...defaultTuning };
         applyTuningToUi();
         resetPath();
         restartPolling();
-        statusEl.textContent = "Defaults loaded (not saved).";
+        statusEl.textContent = "Default baseline loaded.";
       });
 
       document.getElementById("reset-btn").addEventListener("click", () => {
@@ -732,6 +751,9 @@
       Object.values(controls).forEach((el) => {
         el.addEventListener("input", () => {
           readTuningFromUi();
+          // Keep current tuning as baseline default for this big view.
+          defaultTuning = norm(state.tuning);
+          saveDefaultTuning(defaultTuning);
           statusEl.textContent = "Live tuning active (not saved).";
         });
       });
