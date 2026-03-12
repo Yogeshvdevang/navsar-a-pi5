@@ -561,6 +561,7 @@
                     ui.outputSimCanvas.width = w;
                     ui.outputSimCanvas.height = h;
                 }
+                renderer2.setSize(rect.width, rect.height, false);
                 camera2.aspect = rect.width / Math.max(1, rect.height);
                 camera2.updateProjectionMatrix();
             };
