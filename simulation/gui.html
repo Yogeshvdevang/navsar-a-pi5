@@ -803,6 +803,7 @@
       <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">Output Mode</div>
       <div class="mode-buttons" id="mode-buttons">
         <button data-mode="optical_flow_gps_port">Optical GPS</button>
+        <button data-mode="optical_iteration2_gps_port">Optical ITR2 GPS</button>
         <button data-mode="optical_flow_mavlink">Optical MAV</button>
         <button data-mode="gps_port">VO GPS</button>
         <button data-mode="gps_mavlink">VO MAV</button>
@@ -1045,6 +1046,17 @@
             </div>
             <div class="plot-wrap">
               <canvas id="pos-plot"></canvas>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Integrated Position Optical Flow (m) - itration 2</h3>
+            <div class="mode-buttons" id="of2-heading-buttons" style="margin-bottom:8px;">
+              <button type="button" data-heading-source="vo">VO Compass</button>
+              <button type="button" data-heading-source="real">Real Compass</button>
+              <button type="button" data-heading-source="pixhawk">Pixhawk Compass</button>
+            </div>
+            <div class="plot-wrap">
+              <canvas id="pos-plot-itr2"></canvas>
             </div>
           </div>
           <div class="card">
@@ -1382,6 +1394,8 @@
         vy: [],
         x: [],
         y: [],
+        xItr2: [],
+        yItr2: [],
         gpsX: [],
         gpsY: [],
         height: [],
@@ -1404,6 +1418,8 @@
         voHeadingDeg: null,
         currentVxWorldMps: 0,
         currentVyWorldMps: 0,
+        currentItr2VxWorldMps: 0,
+        currentItr2VyWorldMps: 0,
       };
       const calibrationGpsState = {
         maxPoints: 400,
@@ -1438,9 +1454,21 @@
         emaVy: 0,
         lastTimeMs: null,
       };
+      const opLatItr2State = {
+        x: 0,
+        y: 0,
+        vE: 0,
+        vN: 0,
+        pE: 1.0,
+        pN: 1.0,
+        lastTimeMs: null,
+      };
       const OP_LAT_GAIN = 1.0;
       const OP_LAT_EMA_ALPHA = 0.2;
       const OP_LAT_DEADBAND = 0.01;
+      const OP_ITR2_KF_Q = 0.05;
+      const OP_ITR2_KF_R = 0.02;
+      const OP_ITR2_FLOW_QUALITY_MIN = 50;
 
       const filterSignal = (prev, raw, alpha = 0.2, deadband = 0.0, maxStep = 1e9) => {
         let value = Number.isFinite(raw) ? raw : prev;
@@ -1496,6 +1524,71 @@
         };
       };
 
+      const integrateOpticalLikeFlow4Itr2 = (
+        flowVxBodyRaw,
+        flowVyBodyRaw,
+        imuAxBodyRaw,
+        imuAyBodyRaw,
+        headingDeg,
+        flowQuality,
+        nowMs
+      ) => {
+        let flowVxBody = Number(flowVxBodyRaw);
+        let flowVyBody = Number(flowVyBodyRaw);
+        let imuAxBody = Number(imuAxBodyRaw);
+        let imuAyBody = Number(imuAyBodyRaw);
+        if (!Number.isFinite(flowVxBody)) flowVxBody = 0;
+        if (!Number.isFinite(flowVyBody)) flowVyBody = 0;
+        if (!Number.isFinite(imuAxBody)) imuAxBody = 0;
+        if (!Number.isFinite(imuAyBody)) imuAyBody = 0;
+
+        let dt = 0.05;
+        if (Number.isFinite(opLatItr2State.lastTimeMs)) {
+          dt = (nowMs - opLatItr2State.lastTimeMs) / 1000.0;
+          if (!(dt > 0 && dt <= 0.3)) dt = 0.05;
+        }
+        opLatItr2State.lastTimeMs = nowMs;
+
+        const rotatedFlow = rotateOpticalVelocityByHeading(flowVxBody, flowVyBody, headingDeg);
+        const flowE = Number.isFinite(rotatedFlow.vx) ? rotatedFlow.vx : 0;
+        const flowN = Number.isFinite(rotatedFlow.vy) ? rotatedFlow.vy : 0;
+
+        const rotatedImu = rotateOpticalVelocityByHeading(imuAxBody, imuAyBody, headingDeg);
+        const accE = Number.isFinite(rotatedImu.vx) ? rotatedImu.vx : 0;
+        const accN = Number.isFinite(rotatedImu.vy) ? rotatedImu.vy : 0;
+
+        let vEPred = opLatItr2State.vE + accE * dt;
+        let vNPred = opLatItr2State.vN + accN * dt;
+        let pEPred = opLatItr2State.pE + OP_ITR2_KF_Q * dt;
+        let pNPred = opLatItr2State.pN + OP_ITR2_KF_Q * dt;
+
+        const q = Number(flowQuality);
+        const useFlowMeas = Number.isFinite(q) ? q >= OP_ITR2_FLOW_QUALITY_MIN : true;
+        if (useFlowMeas) {
+          const kE = pEPred / (pEPred + OP_ITR2_KF_R);
+          const kN = pNPred / (pNPred + OP_ITR2_KF_R);
+          opLatItr2State.vE = vEPred + kE * (flowE - vEPred);
+          opLatItr2State.vN = vNPred + kN * (flowN - vNPred);
+          opLatItr2State.pE = (1.0 - kE) * pEPred;
+          opLatItr2State.pN = (1.0 - kN) * pNPred;
+        } else {
+          opLatItr2State.vE = vEPred;
+          opLatItr2State.vN = vNPred;
+          opLatItr2State.pE = pEPred;
+          opLatItr2State.pN = pNPred;
+        }
+
+        opLatItr2State.x += opLatItr2State.vE * dt;
+        opLatItr2State.y += opLatItr2State.vN * dt;
+
+        return {
+          x: opLatItr2State.x,
+          y: opLatItr2State.y,
+          vxWorld: opLatItr2State.vE,
+          vyWorld: opLatItr2State.vN,
+        };
+      };
+
       const smoothSeries = (values, windowSize = 11) => {
         if (values.length <= 2 || windowSize <= 1) return values;
         const out = [];
@@ -1548,6 +1641,8 @@
       const velCtx = velPlot ? velPlot.getContext("2d") : null;
       const posPlot = document.getElementById("pos-plot");
       const posCtx = posPlot ? posPlot.getContext("2d") : null;
+      const posPlotItr2 = document.getElementById("pos-plot-itr2");
+      const posCtxItr2 = posPlotItr2 ? posPlotItr2.getContext("2d") : null;
       const voPosPlot = document.getElementById("vo-pos-plot");
       const voPosCtx = voPosPlot ? voPosPlot.getContext("2d") : null;
       const gpsTrajPlot = document.getElementById("gps-traj-plot");
@@ -2918,6 +3013,186 @@
         posCtx.fillText(`vx=${vxText} m/s  vy=${vyText} m/s  ${headingLabel} zrot=${hdgText} deg`, lpx + 10, lpy - 12);
       };
 
+      const drawPosPlotItr2 = () => {
+        const rect = resizeCanvas(posPlotItr2, posCtxItr2);
+        if (!rect) return;
+        if (plotState.xItr2.length < 2) return;
+        const pad = 36;
+        const safeRange = (minVal, maxVal, minSpan = 1.0) => {
+          if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) return [-1, 1];
+          if (minVal === maxVal) {
+            const p = Math.max(minSpan, Math.abs(minVal) * 0.2, 1);
+            return [minVal - p, maxVal + p];
+          }
+          const span = maxVal - minVal;
+          const p = Math.max(span * 0.15, minSpan);
+          return [minVal - p, maxVal + p];
+        };
+
+        let minX = plotState.xItr2[0] ?? 0;
+        let maxX = plotState.xItr2[0] ?? 0;
+        let minY = plotState.yItr2[0] ?? 0;
+        let maxY = plotState.yItr2[0] ?? 0;
+        for (let i = 0; i < plotState.xItr2.length; i += 1) {
+          const x = plotState.xItr2[i];
+          const y = plotState.yItr2[i];
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        if (0 < minX) minX = 0;
+        if (0 > maxX) maxX = 0;
+        if (0 < minY) minY = 0;
+        if (0 > maxY) maxY = 0;
+
+        const [x0, x1] = safeRange(minX, maxX, 1.0);
+        const [y0, y1] = safeRange(minY, maxY, 1.0);
+        const toPx = (x) => pad + ((x - x0) * (rect.width - 2 * pad) / (x1 - x0 || 1));
+        const toPy = (y) => rect.height - pad - ((y - y0) * (rect.height - 2 * pad) / (y1 - y0 || 1));
+
+        posCtxItr2.strokeStyle = "#e2e8f0";
+        posCtxItr2.lineWidth = 1;
+        for (let i = 0; i <= 8; i += 1) {
+          const gy = pad + ((rect.height - 2 * pad) * i / 8);
+          const gx = pad + ((rect.width - 2 * pad) * i / 8);
+          posCtxItr2.beginPath();
+          posCtxItr2.moveTo(pad, gy);
+          posCtxItr2.lineTo(rect.width - pad, gy);
+          posCtxItr2.stroke();
+          posCtxItr2.beginPath();
+          posCtxItr2.moveTo(gx, pad);
+          posCtxItr2.lineTo(gx, rect.height - pad);
+          posCtxItr2.stroke();
+        }
+
+        const ox = toPx(0);
+        const oy = toPy(0);
+        posCtxItr2.strokeStyle = "#94a3b8";
+        posCtxItr2.lineWidth = 1.6;
+        posCtxItr2.beginPath();
+        posCtxItr2.moveTo(pad, oy);
+        posCtxItr2.lineTo(rect.width - pad, oy);
+        posCtxItr2.stroke();
+        posCtxItr2.beginPath();
+        posCtxItr2.moveTo(ox, pad);
+        posCtxItr2.lineTo(ox, rect.height - pad);
+        posCtxItr2.stroke();
+
+        posCtxItr2.fillStyle = "#334155";
+        posCtxItr2.font = "12px sans-serif";
+        posCtxItr2.fillText("Longitude East (+X)", rect.width - pad - 130, oy - 8);
+        posCtxItr2.fillText("Latitude North (+Y)", ox + 6, pad - 8);
+        posCtxItr2.fillText("Home Lat/Lon (0,0)", ox + 8, oy - 8);
+
+        posCtxItr2.strokeStyle = "#7c3aed";
+        posCtxItr2.lineWidth = 2.2;
+        posCtxItr2.beginPath();
+        let moved = false;
+        for (let i = 0; i < plotState.xItr2.length; i += 1) {
+          const x = plotState.xItr2[i];
+          const y = plotState.yItr2[i];
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          const px = toPx(x);
+          const py = toPy(y);
+          if (!moved) {
+            posCtxItr2.moveTo(px, py);
+            moved = true;
+          } else {
+            posCtxItr2.lineTo(px, py);
+          }
+        }
+        if (!moved) return;
+        posCtxItr2.stroke();
+
+        const lx = plotState.xItr2[plotState.xItr2.length - 1] ?? 0;
+        const ly = plotState.yItr2[plotState.yItr2.length - 1] ?? 0;
+        const lpx = toPx(lx);
+        const lpy = toPy(ly);
+        const selectedHeadingDeg =
+          of2HeadingSourceState.value === "vo"
+            ? plotState.voHeadingDeg
+            : (of2HeadingSourceState.value === "pixhawk"
+              ? plotState.pixhawkHeadingDeg
+              : plotState.currentHeadingDeg);
+        const hasHeading = Number.isFinite(Number(selectedHeadingDeg));
+        const vx = Number(plotState.currentItr2VxWorldMps);
+        const vy = Number(plotState.currentItr2VyWorldMps);
+        const hasVel = Number.isFinite(vx) && Number.isFinite(vy);
+
+        if (hasVel) {
+          const maxVelRef = 1.0;
+          const normX = Math.max(-1, Math.min(1, vx / maxVelRef));
+          const normY = Math.max(-1, Math.min(1, vy / maxVelRef));
+          const tipX = lpx + normX * (rect.width - 2 * pad) * 0.12;
+          const tipY = lpy - normY * (rect.height - 2 * pad) * 0.12;
+          const dirX = tipX - lpx;
+          const dirY = tipY - lpy;
+          const mag = Math.hypot(dirX, dirY);
+          if (mag > 1e-6) {
+            const ux = dirX / mag;
+            const uy = dirY / mag;
+            const nx = -uy;
+            const ny = ux;
+            const head = 11;
+            const wing = 6;
+            const baseX = tipX - ux * head;
+            const baseY = tipY - uy * head;
+
+            posCtxItr2.strokeStyle = "rgba(15,23,42,0.20)";
+            posCtxItr2.lineWidth = 8;
+            posCtxItr2.beginPath();
+            posCtxItr2.moveTo(lpx + 2, lpy + 2);
+            posCtxItr2.lineTo(baseX + 2, baseY + 2);
+            posCtxItr2.stroke();
+
+            posCtxItr2.strokeStyle = "#5b21b6";
+            posCtxItr2.lineWidth = 5;
+            posCtxItr2.beginPath();
+            posCtxItr2.moveTo(lpx, lpy);
+            posCtxItr2.lineTo(baseX, baseY);
+            posCtxItr2.stroke();
+
+            posCtxItr2.fillStyle = "#6d28d9";
+            posCtxItr2.beginPath();
+            posCtxItr2.moveTo(tipX, tipY);
+            posCtxItr2.lineTo(baseX + nx * wing, baseY + ny * wing);
+            posCtxItr2.lineTo(baseX - nx * wing, baseY - ny * wing);
+            posCtxItr2.closePath();
+            posCtxItr2.fill();
+          }
+        }
+
+        if (hasHeading) {
+          const headingRad = Number(selectedHeadingDeg) * Math.PI / 180.0;
+          drawOpLatArrow(posCtxItr2, lpx, lpy, headingRad, 26, 8, 10, 4, "#dc2626", "#ef4444", 2.5);
+        }
+
+        const markerHeadingDeg = hasHeading
+          ? Number(selectedHeadingDeg)
+          : (hasVel ? ((Math.atan2(vx, vy) * 180.0 / Math.PI + 360.0) % 360.0) : null);
+        if (Number.isFinite(markerHeadingDeg)) {
+          const a = Number(markerHeadingDeg) * Math.PI / 180.0;
+          drawOpLatArrow(posCtxItr2, lpx, lpy, a, 16, 6, 7, 3, "#030712", "#111827", 2.2);
+        } else {
+          posCtxItr2.fillStyle = "#111827";
+          posCtxItr2.beginPath();
+          posCtxItr2.arc(lpx, lpy, 3, 0, Math.PI * 2);
+          posCtxItr2.fill();
+        }
+
+        const hdgText = hasHeading ? Number(selectedHeadingDeg).toFixed(1) : "--";
+        const vxText = hasVel ? vx.toFixed(3) : "--";
+        const vyText = hasVel ? vy.toFixed(3) : "--";
+        const headingLabel = of2HeadingSourceState.value === "real"
+          ? "real"
+          : (of2HeadingSourceState.value === "pixhawk" ? "pixhawk" : "vo");
+        posCtxItr2.fillStyle = "#0f172a";
+        posCtxItr2.font = "12px monospace";
+        posCtxItr2.fillText(`itr2 vx=${vxText} m/s  vy=${vyText} m/s  ${headingLabel} zrot=${hdgText} deg`, lpx + 10, lpy - 12);
+      };
+
       const drawVoPosPlot = () => {
         const rect = resizeCanvas(voPosPlot, voPosCtx);
         if (!rect) return;
@@ -3954,6 +4229,40 @@
 
           const voCompassHeading = compassFusionState.vo.shown;
           plotState.voHeadingDeg = asFiniteNumber(voCompassHeading, voMotionHeading, plotState.voHeadingDeg);
+          const itr2HeadingDeg = asFiniteNumber(
+            of2HeadingSourceState.value === "vo"
+              ? plotState.voHeadingDeg
+              : (of2HeadingSourceState.value === "pixhawk" ? pixhawkCompassHeading : realCompassHeading),
+            realCompassHeading,
+            pixhawkCompassHeading,
+            plotState.voHeadingDeg
+          );
+          const itr2FlowBodyVx = asFiniteNumber(
+            opt?.speed_x,
+            opt?.flow_vx,
+            rawVx,
+            0
+          );
+          const itr2FlowBodyVy = asFiniteNumber(
+            opt?.speed_y,
+            opt?.flow_vy,
+            rawVy,
+            0
+          );
+          const itr2ImuAxBody = asFiniteNumber(data.sensors?.imu?.ax, 0);
+          const itr2ImuAyBody = asFiniteNumber(data.sensors?.imu?.ay, 0);
+          const itr2FlowQuality = asFiniteNumber(opt?.flow_q, opt?.quality, 0);
+          const itr2Integrated = integrateOpticalLikeFlow4Itr2(
+            itr2FlowBodyVx,
+            itr2FlowBodyVy,
+            itr2ImuAxBody,
+            itr2ImuAyBody,
+            itr2HeadingDeg,
+            itr2FlowQuality,
+            nowMs
+          );
+          plotState.currentItr2VxWorldMps = itr2Integrated.vxWorld;
+          plotState.currentItr2VyWorldMps = itr2Integrated.vyWorld;
           setText("nav-hdg", heading, 1);
 
           setText("rt-height", altitude, 3);
@@ -4018,6 +4327,8 @@
           pushSeries(plotState.vy, vy);
           pushSeries(plotState.x, posX);
           pushSeries(plotState.y, posY);
+          pushSeries(plotState.xItr2, itr2Integrated.x);
+          pushSeries(plotState.yItr2, itr2Integrated.y);
           const voX = asFiniteNumber(data.camera?.x);
           const voY = asFiniteNumber(data.camera?.y);
           pushSeries(plotState.voX, Number.isFinite(voX) ? voX : NaN);
@@ -4043,6 +4354,7 @@
 
           drawVelPlot();
           drawPosPlot();
+          drawPosPlotItr2();
           drawVoPosPlot();
           drawGpsTrajectoryPlot();
           drawGpsLatPlot();
@@ -4101,6 +4413,7 @@
       const openVoBigViewBtn = document.getElementById("open-vo-big-view-btn");
       const openMavlinkBigViewBtn = document.getElementById("open-mavlink-big-view-btn");
       const ofHeadingButtons = Array.from(document.querySelectorAll("#of-heading-buttons button"));
+      const of2HeadingButtons = Array.from(document.querySelectorAll("#of2-heading-buttons button"));
       const voHeadingButtons = Array.from(document.querySelectorAll("#vo-heading-buttons button"));
       const gpsTrajHeadingButtons = Array.from(document.querySelectorAll("#gps-traj-heading-buttons button"));
       const gpsAutoBtn = document.getElementById("gps-auto-btn");
@@ -4113,6 +4426,7 @@
       const gpsAltInput = document.getElementById("gps-alt-input");
       const gpsOriginMode = { value: "auto" };
       const ofHeadingSourceState = { value: "real" };
+      const of2HeadingSourceState = { value: "real" };
       const voHeadingSourceState = { value: "vo" };
       const gpsTrajHeadingSourceState = { value: "real" };
 
@@ -4123,6 +4437,11 @@
       const updateOfHeadingButtons = () => {
         ofHeadingButtons.forEach((btn) => {
           btn.classList.toggle("active", btn.dataset.headingSource === ofHeadingSourceState.value);
+        });
+      };
+      const updateOf2HeadingButtons = () => {
+        of2HeadingButtons.forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.headingSource === of2HeadingSourceState.value);
         });
       };
 
@@ -5642,6 +5961,16 @@
           }
         });
       });
+      of2HeadingButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const src = btn.dataset.headingSource;
+          if (src === "vo" || src === "real" || src === "pixhawk") {
+            of2HeadingSourceState.value = src;
+            updateOf2HeadingButtons();
+            drawPosPlotItr2();
+          }
+        });
+      });
       voHeadingButtons.forEach((btn) => {
         btn.addEventListener("click", () => {
           const src = btn.dataset.headingSource;
@@ -5662,6 +5991,7 @@
         });
       });
       updateOfHeadingButtons();
+      updateOf2HeadingButtons();
       updateVoHeadingButtons();
       updateGpsTrajHeadingButtons();
       if (gpsAutoBtn) {
@@ -5817,6 +6147,7 @@
         fitCamCanvas();
         drawVelPlot();
         drawPosPlot();
+        drawPosPlotItr2();
         drawVoPosPlot();
         drawGpsLatPlot();
         drawGpsLonPlot();

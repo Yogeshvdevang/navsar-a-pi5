@@ -2692,6 +2692,7 @@ def main():
         "gps_passthrough",
         "optical_flow_mavlink",
         "optical_flow_gps_port",
+        "optical_iteration2_gps_port",
         "optical_gps_port_imu",
         "optical_flow_then_vo",
     }:
@@ -2700,6 +2701,7 @@ def main():
     optical_modes = {
         "optical_flow_mavlink",
         "optical_flow_gps_port",
+        "optical_iteration2_gps_port",
         "optical_gps_port_imu",
     }
     allowed_modes = set(optical_modes) | {
@@ -4211,7 +4213,7 @@ def main():
                 last_optical_flow["value"],
                 mavlink_interface,
             )
-        elif active_output_mode == "optical_flow_gps_port":
+        elif active_output_mode in {"optical_flow_gps_port", "optical_iteration2_gps_port"}:
             optical_flow_gps_port_mode.set_speed_scale(
                 1.0 if optical_raw_mode else optical_flow_scale_state.get_current_scale()
             )
