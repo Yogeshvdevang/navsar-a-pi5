@@ -816,6 +816,12 @@
         <button data-format="nmea">NMEA</button>
         <button data-format="ubx_nmea">UBX+NMEA</button>
       </div>
+      <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">Board Profile</div>
+      <div class="mode-buttons" id="hardware-profile-buttons">
+        <button data-profile="rp5">RP5</button>
+        <button data-profile="cm4">CM4</button>
+      </div>
+      <div class="gps-origin-note" id="hardware-profile-status">Board profile: --</div>
       <div style="font-size:12px; font-weight:700; color:var(--muted); margin-top:6px;">Actions</div>
       <div class="mode-buttons" id="rw-buttons">
         <button data-action="read">Read</button>
@@ -4376,6 +4382,8 @@
 
       const modeButtons = Array.from(document.querySelectorAll("#mode-buttons button"));
       const gpsFormatButtons = Array.from(document.querySelectorAll("#gps-format-buttons button"));
+      const hardwareProfileButtons = Array.from(document.querySelectorAll("#hardware-profile-buttons button"));
+      const hardwareProfileStatusEl = document.getElementById("hardware-profile-status");
       const rwButtons = Array.from(document.querySelectorAll("#rw-buttons button"));
       const blackboxStartBtn = document.getElementById("blackbox-start-btn");
       const blackboxStopBtn = document.getElementById("blackbox-stop-btn");
@@ -4433,10 +4441,18 @@
       const setGpsModeStatus = (text) => {
         if (gpsModeStatus) gpsModeStatus.textContent = `Mode status: ${text}`;
       };
+      const setHardwareProfileStatus = (text) => {
+        if (hardwareProfileStatusEl) hardwareProfileStatusEl.textContent = `Board profile: ${text}`;
+      };
 
       const updateOfHeadingButtons = () => {
         ofHeadingButtons.forEach((btn) => {
           btn.classList.toggle("active", btn.dataset.headingSource === ofHeadingSourceState.value);
+        });
+      };
+      const updateHardwareProfileButtons = (profile) => {
+        hardwareProfileButtons.forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.profile === profile);
         });
       };
       const updateOf2HeadingButtons = () => {
@@ -5807,6 +5823,36 @@
           // ignore
         }
       };
+      const setHardwareProfile = async (profile) => {
+        try {
+          const res = await fetch("/hardware-profile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ profile }),
+          });
+          const payload = await res.json();
+          if (res.ok && payload?.ok) {
+            const written = payload?.written || {};
+            const activeProfile = String(written.profile || profile || "").toLowerCase();
+            updateHardwareProfileButtons(activeProfile);
+            const gpsInput = written?.gps_input || {};
+            const opticalFlow = written?.optical_flow || {};
+            const gpsPassthrough = written?.gps_passthrough || {};
+            setHardwareProfileStatus(
+              `${activeProfile} | gps=${gpsInput.port || "--"}@${gpsInput.baud || "--"} of=${opticalFlow.port || "--"} passthrough=${gpsPassthrough.input_port || "--"}`
+            );
+            appendLog(
+              `hardware profile set ${activeProfile} gps=${gpsInput.port || "--"}@${gpsInput.baud || "--"} of=${opticalFlow.port || "--"} passthrough=${gpsPassthrough.input_port || "--"}`
+            );
+          } else {
+            setHardwareProfileStatus(`failed (${payload?.error || "unknown error"})`);
+            appendLog(`hardware profile failed: ${payload?.error || "unknown error"}`);
+          }
+        } catch (_) {
+          setHardwareProfileStatus("failed (endpoint unavailable)");
+          appendLog("hardware profile failed: endpoint unavailable");
+        }
+      };
       const handleRead = () => {
         (async () => {
           try {
@@ -5938,6 +5984,11 @@
       gpsFormatButtons.forEach((btn) => {
         btn.addEventListener("click", () => {
           setGpsFormat(btn.dataset.format);
+        });
+      });
+      hardwareProfileButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          setHardwareProfile(btn.dataset.profile);
         });
       });
       rwButtons.forEach((btn) => {
@@ -6077,12 +6128,35 @@
           // ignore
         }
       };
+      const refreshHardwareProfileState = async () => {
+        try {
+          const res = await fetch("/hardware-profile", { cache: "no-store" });
+          const payload = await res.json();
+          const profile = String(payload?.profile || "").trim().toLowerCase();
+          if (profile === "rp5" || profile === "cm4") {
+            updateHardwareProfileButtons(profile);
+          } else {
+            updateHardwareProfileButtons("__none__");
+          }
+          const serialMap = payload?.serial_map || {};
+          const gpsInput = serialMap?.gps_input || {};
+          const opticalFlow = serialMap?.optical_flow || {};
+          const gpsPassthrough = serialMap?.gps_passthrough || {};
+          const label = profile || "custom";
+          setHardwareProfileStatus(
+            `${label} | gps=${gpsInput.port || "--"}@${gpsInput.baud || "--"} of=${opticalFlow.port || "--"} passthrough=${gpsPassthrough.input_port || "--"}`
+          );
+        } catch (_) {
+          setHardwareProfileStatus("unavailable");
+        }
+      };
 
       tick();
       pollCalibrationData();
       refreshCalibrationTuning();
       refreshModeState();
       refreshGpsFormatState();
+      refreshHardwareProfileState();
       updateGpsOriginUi();
       refreshGpsOriginState();
       refreshBlackboxState();
@@ -6139,6 +6213,7 @@
       setInterval(refreshCalibrationTuning, 2000);
       setInterval(refreshModeState, 2000);
       setInterval(refreshGpsFormatState, 2000);
+      setInterval(refreshHardwareProfileState, 2000);
       setInterval(refreshGpsOriginState, 2000);
       setInterval(refreshBlackboxState, 2000);
       setInterval(refreshSensorCsvState, 2000);

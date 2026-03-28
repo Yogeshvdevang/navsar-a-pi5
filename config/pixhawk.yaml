@@ -115,7 +115,7 @@ gps_output:
   print: true
   raw_print: true
 gps_passthrough:
-  input_port: /dev/ttyAMA5
+  input_port: /dev/ttyAMA4
   input_baud: 230400
   output_port: /dev/ttyAMA0
   output_baud: 230400

@@ -381,6 +381,97 @@ def _persist_gps_origin(pixhawk_config_path, lat, lon, alt_m):
     }
 
 
+def _hardware_profile_values(profile):
+    profile_key = str(profile or "").strip().lower()
+    if profile_key == "rp5":
+        return {
+            "gps_input": {"port": "/dev/ttyAMA4", "baud": 9600},
+            "optical_flow": {"port": "/dev/ttyAMA2"},
+            "gps_passthrough": {"input_port": "/dev/ttyAMA4"},
+        }
+    if profile_key == "cm4":
+        return {
+            "gps_input": {"port": "/dev/ttyAMA5", "baud": 230400},
+            "optical_flow": {"port": "/dev/ttyAMA3"},
+            "gps_passthrough": {"input_port": "/dev/ttyAMA5"},
+        }
+    return None
+
+
+def _detect_hardware_profile(cfg):
+    if not isinstance(cfg, dict):
+        return "custom"
+    gps_input = cfg.get("gps_input")
+    optical_flow = cfg.get("optical_flow")
+    gps_passthrough = cfg.get("gps_passthrough")
+    values = {
+        "gps_input": {
+            "port": gps_input.get("port") if isinstance(gps_input, dict) else None,
+            "baud": gps_input.get("baud") if isinstance(gps_input, dict) else None,
+        },
+        "optical_flow": {
+            "port": optical_flow.get("port") if isinstance(optical_flow, dict) else None,
+        },
+        "gps_passthrough": {
+            "input_port": (
+                gps_passthrough.get("input_port")
+                if isinstance(gps_passthrough, dict)
+                else None
+            ),
+        },
+    }
+    for candidate in ("rp5", "cm4"):
+        expected = _hardware_profile_values(candidate)
+        if expected == values:
+            return candidate
+    return "custom"
+
+
+def _persist_hardware_profile(pixhawk_config_path, profile):
+    """Persist hardware profile serial mappings into config/pixhawk.yaml."""
+    values = _hardware_profile_values(profile)
+    if values is None:
+        raise ValueError("invalid hardware profile")
+    path = Path(pixhawk_config_path)
+    with _CONFIG_WRITE_LOCK:
+        cfg = _load_yaml(path)
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        gps_input_cfg = cfg.get("gps_input")
+        if not isinstance(gps_input_cfg, dict):
+            gps_input_cfg = {}
+        gps_input_cfg["port"] = values["gps_input"]["port"]
+        gps_input_cfg["baud"] = int(values["gps_input"]["baud"])
+        cfg["gps_input"] = gps_input_cfg
+
+        optical_flow_cfg = cfg.get("optical_flow")
+        if not isinstance(optical_flow_cfg, dict):
+            optical_flow_cfg = {}
+        optical_flow_cfg["port"] = values["optical_flow"]["port"]
+        cfg["optical_flow"] = optical_flow_cfg
+
+        gps_passthrough_cfg = cfg.get("gps_passthrough")
+        if not isinstance(gps_passthrough_cfg, dict):
+            gps_passthrough_cfg = {}
+        gps_passthrough_cfg["input_port"] = values["gps_passthrough"]["input_port"]
+        cfg["gps_passthrough"] = gps_passthrough_cfg
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(cfg, handle, sort_keys=False)
+
+    return {
+        "profile": str(profile).strip().lower(),
+        "gps_input": {
+            "port": values["gps_input"]["port"],
+            "baud": int(values["gps_input"]["baud"]),
+        },
+        "optical_flow": {"port": values["optical_flow"]["port"]},
+        "gps_passthrough": {"input_port": values["gps_passthrough"]["input_port"]},
+    }
+
+
 def _run_service_command(action, service_name):
     """Run a systemd command for the NAVISAR service."""
     cmd = ["systemctl", action, service_name]
@@ -1500,6 +1591,53 @@ def _make_dashboard_handler(
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            if req_path.startswith("/hardware-profile"):
+                persisted_cfg = _load_yaml(Path(pixhawk_config_path))
+                gps_input_cfg = (
+                    persisted_cfg.get("gps_input")
+                    if isinstance(persisted_cfg, dict)
+                    else {}
+                )
+                if not isinstance(gps_input_cfg, dict):
+                    gps_input_cfg = {}
+                optical_flow_cfg = (
+                    persisted_cfg.get("optical_flow")
+                    if isinstance(persisted_cfg, dict)
+                    else {}
+                )
+                if not isinstance(optical_flow_cfg, dict):
+                    optical_flow_cfg = {}
+                gps_passthrough_cfg = (
+                    persisted_cfg.get("gps_passthrough")
+                    if isinstance(persisted_cfg, dict)
+                    else {}
+                )
+                if not isinstance(gps_passthrough_cfg, dict):
+                    gps_passthrough_cfg = {}
+                payload = {
+                    "profile": _detect_hardware_profile(persisted_cfg),
+                    "serial_map": {
+                        "gps_input": {
+                            "port": gps_input_cfg.get("port"),
+                            "baud": gps_input_cfg.get("baud"),
+                        },
+                        "optical_flow": {
+                            "port": optical_flow_cfg.get("port"),
+                        },
+                        "gps_passthrough": {
+                            "input_port": gps_passthrough_cfg.get("input_port"),
+                        },
+                    },
+                    "config_path": str(pixhawk_config_path),
+                }
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if req_path.startswith("/service"):
                 active_ok, active_msg = _run_service_command(
                     "is-active", NAVISAR_SERVICE_NAME
@@ -1637,6 +1775,7 @@ def _make_dashboard_handler(
                 and not self.path.startswith("/altitude-offset")
                 and not self.path.startswith("/gps-origin")
                 and not self.path.startswith("/persist")
+                and not self.path.startswith("/hardware-profile")
                 and not self.path.startswith("/calibration-tuning")
                 and not self.path.startswith("/optical-flow-scale")
                 and not self.path.startswith("/service")
@@ -1873,6 +2012,30 @@ def _make_dashboard_handler(
                     }
                 ).encode("utf-8")
                 self.send_response(200)
+            elif req_path.startswith("/hardware-profile"):
+                requested_profile = str(payload.get("profile", "")).strip().lower()
+                values = _hardware_profile_values(requested_profile)
+                if values is None:
+                    data = json.dumps(
+                        {
+                            "ok": False,
+                            "error": "invalid hardware profile",
+                            "allowed_profiles": ["rp5", "cm4"],
+                        }
+                    ).encode("utf-8")
+                    self.send_response(400)
+                else:
+                    written = _persist_hardware_profile(
+                        pixhawk_config_path=pixhawk_config_path,
+                        profile=requested_profile,
+                    )
+                    data = json.dumps(
+                        {
+                            "ok": True,
+                            "written": written,
+                        }
+                    ).encode("utf-8")
+                    self.send_response(200)
             elif req_path.startswith("/calibration-tuning"):
                 lat_scale_raw = payload.get(
                     "lat_scale", float(calibration_tuning_state["lat_scale"].get())
